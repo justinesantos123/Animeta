@@ -65,6 +65,18 @@ export const api = {
     request(`/admin/users/${encodeURIComponent(id)}/reset-link`, { method: 'POST' }),
   deleteUser: (id) => request(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  // announcements
+  listAnnouncements: () => request('/announcements'),
+  listStaffAnnouncements: () => request('/announcements/staff'),
+  createAnnouncement: (payload) => request('/announcements/staff', { method: 'POST', body: payload }),
+  deleteAnnouncement: (id) => request(`/announcements/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // notifications
+  listNotifications: () => request('/notifications'),
+  markNotificationRead: (id) =>
+    request(`/notifications/${encodeURIComponent(id)}`, { method: 'POST' }),
+  markAllNotificationsRead: () => request('/notifications', { method: 'POST' }),
+
   // self-service reset
   requestPasswordReset: (email) =>
     request('/auth/request-reset', { method: 'POST', body: { email } }),

@@ -8,6 +8,7 @@ import {
   generatePassword,
   generateResetToken,
   hashResetToken,
+  passwordFingerprint,
   sessionCookie,
   clearSessionCookie,
   COOKIE_NAME,
@@ -108,9 +109,9 @@ async function handleSignup(request, env) {
   const role = ownerEmails(env).includes(email) ? 'admin' : 'user';
 
   await env.DB.prepare(
-    'INSERT INTO users (id, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO users (id, email, password_hash, salt, role, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, email, hash, salt, role)
+    .bind(id, email, hash, salt, role, await passwordFingerprint(password))
     .run();
 
   const token = await signToken({ sub: id, role }, env.SESSION_SECRET);
@@ -213,6 +214,18 @@ async function handleGetTitle(request, env, url, slug) {
     seasons: seasons.results,
     episodes: episodes.results,
   });
+}
+
+const STAFF_ROLES = ['admin', 'moderator'];
+
+/** True when the signed-in account is staff (any tier below owner). */
+async function requireStaff(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return { error: json({ error: 'Authentication required' }, 401) };
+  if (!STAFF_ROLES.includes(user.role)) {
+    return { error: json({ error: 'Staff access required' }, 403) };
+  }
+  return { user };
 }
 
 async function requireAdmin(request, env) {
@@ -541,7 +554,7 @@ async function issueResetLink(env, user, request) {
  * is the situation while the site is on a test subdomain.
  */
 async function handleAdminSendResetLink(request, env, targetId) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requireStaff(request, env);
   if (auth.error) return auth.error;
 
   const user = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
@@ -563,11 +576,11 @@ async function handleAdminSendResetLink(request, env, targetId) {
 }
 
 async function handleListUsers(request, env) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requireStaff(request, env);
   if (auth.error) return auth.error;
 
   const { results } = await env.DB.prepare(
-    `SELECT u.id, u.email, u.role, u.display_name, u.created_at,
+    `SELECT u.id, u.email, u.role, u.display_name, u.created_at, u.password_fingerprint,
             (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.id) AS watchlist_count,
             (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active
      FROM users u
@@ -575,6 +588,22 @@ async function handleListUsers(request, env) {
   ).all();
 
   const owners = ownerEmails(env);
+
+  // Reset history per user, so staff can see who last changed a credential and when.
+  const history = {};
+  const { results: logs } = await env.DB.prepare(
+    `SELECT target_id, action, detail, created_at FROM admin_action_log
+     WHERE action IN ('user.password.reset','user.role.admin','user.role.moderator','user.role.user')
+     ORDER BY created_at DESC LIMIT 200`,
+  ).all();
+  for (const l of logs) {
+    if (!l.target_id) continue;
+    (history[l.target_id] ||= []).push({
+      action: l.action,
+      detail: l.detail,
+      at: l.created_at,
+    });
+  }
 
   // NOTE: password_hash and salt are deliberately never selected here.
   return json({
@@ -587,6 +616,9 @@ async function handleListUsers(request, env) {
       watchlistCount: u.watchlist_count,
       lastActive: u.last_active,
       isOwner: owners.includes(u.email.toLowerCase()),
+      // Non-reversible 8-char code. Identifies a credential without revealing it.
+      passwordFingerprint: u.password_fingerprint,
+      passwordHistory: (history[u.id] || []).slice(0, 5),
     })),
     // The frontend treats a truthy ownerEmail as "the signed-in user is the
     // owner", so only report it when that is actually true.
@@ -621,10 +653,10 @@ async function handleCreateUser(request, env) {
     return json({ error: 'Password must be at least 8 characters' }, 400);
   }
 
-  const owners = ownerEmails(env);
-  const requestedRole = body.role === 'admin' ? 'admin' : 'user';
-  // Only the owner may mint other admins.
-  const isOwner = owner && auth.user.email.toLowerCase() === owner;
+  const roles = ['user', 'moderator', 'admin'];
+  const requestedRole = roles.includes(body.role) ? body.role : 'user';
+  // Only the owner may mint admins; admins may create moderators.
+  const isOwner = ownerEmails(env).includes(auth.user.email.toLowerCase());
   const role = requestedRole === 'admin' && !isOwner ? 'user' : requestedRole;
 
   const id = randomHex(16);
@@ -632,9 +664,9 @@ async function handleCreateUser(request, env) {
   const hash = await hashPassword(password, salt);
 
   await env.DB.prepare(
-    'INSERT INTO users (id, email, password_hash, salt, role, display_name) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO users (id, email, password_hash, salt, role, display_name, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, email, hash, salt, role, body.displayName ?? null)
+    .bind(id, email, hash, salt, role, body.displayName ?? null, await passwordFingerprint(password))
     .run();
 
   await logAdminAction(env, auth.user.id, 'user.create', id, email);
@@ -662,8 +694,8 @@ async function handleSetRole(request, env, targetId) {
   }
 
   const role = body.role;
-  if (role !== 'admin' && role !== 'user') {
-    return json({ error: 'role must be admin or user' }, 400);
+  if (!['user', 'moderator', 'admin'].includes(role)) {
+    return json({ error: 'role must be admin, moderator or user' }, 400);
   }
 
   const owners = ownerEmails(env);
@@ -689,7 +721,7 @@ async function handleSetRole(request, env, targetId) {
  * readable form, so it cannot be displayed again later.
  */
 async function handleAdminResetPassword(request, env, targetId) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requireStaff(request, env);
   if (auth.error) return auth.error;
 
   const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
@@ -701,8 +733,10 @@ async function handleAdminResetPassword(request, env, targetId) {
   const salt = randomSalt();
   const hash = await hashPassword(password, salt);
 
-  await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?')
-    .bind(hash, salt, target.id)
+  await env.DB.prepare(
+    'UPDATE users SET password_hash = ?, salt = ?, password_fingerprint = ? WHERE id = ?',
+  )
+    .bind(hash, salt, await passwordFingerprint(password), target.id)
     .run();
 
   // Existing sessions keep working; force re-login with the new password.
@@ -719,7 +753,7 @@ async function handleAdminResetPassword(request, env, targetId) {
 
 /** Owner only: delete an account. */
 async function handleDeleteUser(request, env, targetId) {
-  const auth = await requireOwner(request, env);
+  const auth = await requireAdmin(request, env);
   if (auth.error) return auth.error;
 
   const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
@@ -768,6 +802,17 @@ async function handleRequestReset(request, env) {
 
   const result = await issueResetLink(env, user, request);
 
+  // Tell staff someone is locked out. The address is included because staff
+  // need to know who to help; this inbox is only visible to staff accounts.
+  await notify(env, {
+    userIds: await staffIds(env),
+    kind: 'password_reset_request',
+    title: 'Password reset requested',
+    body: `${user.email} requested a password reset link.`,
+    link: '/kaedeentrans',
+    actor: user.email,
+  });
+
   return json({
     ...accepted,
     delivery: result.emailed ? 'email' : 'unavailable',
@@ -805,8 +850,10 @@ async function handleResetPassword(request, env) {
   const salt = randomSalt();
   const hash = await hashPassword(password, salt);
 
-  await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?')
-    .bind(hash, salt, row.user_id)
+  await env.DB.prepare(
+    'UPDATE users SET password_hash = ?, salt = ?, password_fingerprint = ? WHERE id = ?',
+  )
+    .bind(hash, salt, await passwordFingerprint(password), row.user_id)
     .run();
 
   // Burn the token so a leaked link cannot be replayed.
@@ -814,6 +861,195 @@ async function handleResetPassword(request, env) {
     "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?",
   )
     .bind(row.id)
+    .run();
+
+  return json({ ok: true });
+}
+
+// ------------------------------------------------------ announcements & inbox
+
+async function notify(env, { userIds, kind, title, body, link, actor }) {
+  if (!userIds.length) return 0;
+  const stmt = env.DB.prepare(
+    'INSERT INTO notifications (id, user_id, kind, title, body, link, actor) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  const batch = userIds.map((uid) =>
+    stmt.bind(randomHex(16), uid, kind, title, body ?? null, link ?? null, actor ?? null),
+  );
+  await env.DB.batch(batch);
+  return userIds.length;
+}
+
+async function staffIds(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT id FROM users WHERE role IN ('admin','moderator')",
+  ).all();
+  return results.map((r) => r.id);
+}
+
+async function allUserIds(env) {
+  const { results } = await env.DB.prepare('SELECT id FROM users').all();
+  return results.map((r) => r.id);
+}
+
+function shapeAnnouncement(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    authorEmail: row.author_email,
+    audience: row.audience,
+    pinned: Boolean(row.pinned),
+    publishedAt: row.published_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Staff-only (admins and moderators) can post. */
+async function handleListAnnouncements(request, env) {
+  const auth = await requireStaff(request, env);
+  if (auth.error) return auth.error;
+
+  const { results } = await env.DB.prepare(
+    'SELECT * FROM announcements ORDER BY pinned DESC, published_at DESC LIMIT 100',
+  ).all();
+
+  return json({ announcements: results.map(shapeAnnouncement) });
+}
+
+async function handleCreateAnnouncement(request, env) {
+  const auth = await requireStaff(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const title = String(body.title ?? '').trim();
+  const text = String(body.body ?? '').trim();
+  if (!title) return json({ error: 'A title is required' }, 400);
+  if (!text) return json({ error: 'Write something in the body' }, 400);
+  if (title.length > 140) return json({ error: 'Title is too long' }, 400);
+  if (text.length > 5000) return json({ error: 'Body is too long' }, 400);
+
+  // 'staff' posts only notify staff; 'all' also notifies regular users.
+  const audience = body.audience === 'staff' ? 'staff' : 'all';
+  const id = randomHex(16);
+
+  await env.DB.prepare(
+    `INSERT INTO announcements (id, title, body, author_id, author_email, audience, pinned)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      title,
+      text,
+      auth.user.id,
+      auth.user.email,
+      audience,
+      body.pinned ? 1 : 0,
+    )
+    .run();
+
+  await logAdminAction(env, auth.user.id, 'announcement.create', id, title);
+
+  const targets = audience === 'staff' ? await staffIds(env) : await allUserIds(env);
+  await notify(env, {
+    userIds: targets,
+    kind: 'announcement',
+    title,
+    body: text.slice(0, 140),
+    link: '/announcements',
+    actor: auth.user.email,
+  });
+
+  const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
+  return json({ announcement: shapeAnnouncement(row), notified: targets.length }, 201);
+}
+
+async function handleDeleteAnnouncement(request, env, id) {
+  const auth = await requireStaff(request, env);
+  if (auth.error) return auth.error;
+
+  const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
+  if (!row) return json({ error: 'Announcement not found' }, 404);
+
+  // Authors may remove their own; only admins can remove anyone's.
+  const isAuthor = row.author_id === auth.user.id;
+  if (!isAuthor && auth.user.role !== 'admin') {
+    return json({ error: 'You can only delete your own announcements' }, 403);
+  }
+
+  await env.DB.prepare('DELETE FROM announcements WHERE id = ?').bind(id).run();
+  await logAdminAction(env, auth.user.id, 'announcement.delete', id, row.title);
+
+  return json({ ok: true });
+}
+
+/** Any signed-in user can read the announcements aimed at them. */
+async function handleListPublicAnnouncements(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  const isStaff = STAFF_ROLES.includes(user.role);
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM announcements
+     WHERE audience = 'all' ${isStaff ? "OR audience = 'staff'" : ''}
+     ORDER BY pinned DESC, published_at DESC LIMIT 50`,
+  ).all();
+
+  return json({ announcements: results.map(shapeAnnouncement) });
+}
+
+async function handleListNotifications(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  const { results } = await env.DB.prepare(
+    'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
+  )
+    .bind(user.id)
+    .all();
+
+  return json({
+    notifications: results.map((n) => ({
+      id: n.id,
+      kind: n.kind,
+      title: n.title,
+      body: n.body,
+      link: n.link,
+      actor: n.actor,
+      readAt: n.read_at,
+      createdAt: n.created_at,
+    })),
+    unread: results.filter((n) => !n.read_at).length,
+  });
+}
+
+async function handleMarkRead(request, env, id) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  await env.DB.prepare(
+    "UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND user_id = ? AND read_at IS NULL",
+  )
+    .bind(id, user.id)
+    .run();
+
+  return json({ ok: true });
+}
+
+async function handleMarkAllRead(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  await env.DB.prepare(
+    "UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL",
+  )
+    .bind(user.id)
     .run();
 
   return json({ ok: true });
@@ -878,6 +1114,25 @@ export async function handleApi(request, env, url) {
     if (seg[1] === 'playback') {
       if (seg[2] === 'start' && method === 'POST') return handlePlaybackStart(request, env);
       if (seg[2] === 'continue' && method === 'GET') return handleContinueWatching(request, env);
+    }
+
+    if (seg[1] === 'notifications') {
+      if (seg.length === 2 && method === 'GET') return handleListNotifications(request, env);
+      if (seg.length === 2 && method === 'POST') return handleMarkAllRead(request, env);
+      if (seg.length === 3 && method === 'POST') return handleMarkRead(request, env, seg[2]);
+    }
+
+    if (seg[1] === 'announcements') {
+      if (seg.length === 2 && method === 'GET') return handleListPublicAnnouncements(request, env);
+      if (seg.length === 3 && seg[2] === 'staff' && method === 'GET') {
+        return handleListAnnouncements(request, env);
+      }
+      if (seg.length === 3 && seg[2] === 'staff' && method === 'POST') {
+        return handleCreateAnnouncement(request, env);
+      }
+      if (seg.length === 3 && method === 'DELETE') {
+        return handleDeleteAnnouncement(request, env, seg[2]);
+      }
     }
 
     if (seg[1] === 'health' && method === 'GET') return json({ ok: true, ts: Date.now() });

@@ -21,6 +21,7 @@ virtualConsole.on('jsdomError', (e) => errors.push(e.message));
 virtualConsole.on('error', (...a) => errors.push(a.map(String).join(' ')));
 
 const routes = [
+  '/announcements',
   '/',
   '/auth',
   '/forgot-password',

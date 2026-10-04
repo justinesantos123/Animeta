@@ -1,10 +1,14 @@
 import { useState } from 'react';
 import { NavLink, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import NotificationBell from './NotificationBell';
+
+const STAFF = ['admin', 'moderator'];
 
 const LINKS = [
   { to: '/', label: 'Home', icon: 'M3 10.5 12 3l9 7.5V21H15v-6H9v6H3z' },
   { to: '/search', label: 'Search', icon: 'M10 4a6 6 0 104.47 10.03l4.25 4.25 1.41-1.41-4.25-4.25A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z' },
+  { to: '/announcements', label: 'News', icon: 'M3 5h18v12H7l-4 4V5zm2 2v8.2L6.2 13H19V7H5z' },
   { to: '/watchlist', label: 'Library', icon: 'M4 4h3v16H4zm6.5 0h3v16h-3zM17 4h3v16h-3z' },
 ];
 
@@ -54,14 +58,14 @@ function UserMenu() {
               )}
               {user.displayName || user.email}
             </p>
-            {user.role === 'admin' && (
+            {STAFF.includes(user.role) && (
               <Link
                 to="/kaedeentrans"
                 onClick={() => setOpen(false)}
                 className="block px-4 py-2 text-sm transition hover:bg-surface-2"
                 role="menuitem"
               >
-                Admin console
+                Staff console
               </Link>
             )}
             <button
@@ -117,6 +121,7 @@ export function TopNav() {
             Search titles…
           </Link>
           <UserMenu />
+          <NotificationBell />
         </div>
       </div>
     </header>

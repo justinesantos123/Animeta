@@ -3,10 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 import UserAdmin from './UserAdmin';
+import { AnnouncementComposer, AnnouncementList } from '../components/Announcements';
+import { useNotifications } from '../context/NotificationsContext';
+
+const STAFF = ['admin', 'moderator'];
 
 const TABS = [
-  { id: 'catalog', label: 'Catalog' },
-  { id: 'users', label: 'Users' },
+  { id: 'catalog', label: 'Catalog', staff: 'admin' },
+  { id: 'users', label: 'Users', staff: 'staff' },
+  { id: 'announcements', label: 'Announcements', staff: 'staff' },
 ];
 
 const EMPTY = {
@@ -33,6 +38,7 @@ const INPUT =
 export default function Admin() {
   const { user, ready } = useAuth();
   const navigate = useNavigate();
+  const { refresh: refreshNotifications } = useNotifications();
   const [tab, setTab] = useState('catalog');
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
@@ -52,13 +58,16 @@ export default function Admin() {
     if (ready && !user) navigate('/auth', { replace: true });
   }, [ready, user, navigate]);
 
-  if (!ready || !user || user.role !== 'admin') {
+  if (!ready || !user || !STAFF.includes(user.role)) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-24 text-center">
         <p className="text-sm text-muted">Checking access…</p>
       </div>
     );
   }
+
+  const isAdmin = user.role === 'admin';
+  const visibleTabs = TABS.filter((t) => (t.staff === 'admin' ? isAdmin : true));
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -104,11 +113,17 @@ export default function Admin() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 pb-24">
-      <h1 className="text-2xl font-extrabold">Admin console</h1>
-      <p className="mt-1 text-sm text-muted">Signed in as {user.email}</p>
+      <h1 className="text-2xl font-extrabold">Staff console</h1>
+      <p className="mt-1 text-sm text-muted">
+        Signed in as {user.email} ·{' '}
+        <span className={isAdmin ? 'text-accent' : 'text-muted'}>
+          {isAdmin ? 'admin' : 'moderator'}
+        </span>
+        {!isAdmin && ' · catalog editing and account deletion are owner/admin only'}
+      </p>
 
       <div className="mt-6 flex gap-1 border-b border-white/10" role="tablist">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             type="button"
@@ -126,9 +141,17 @@ export default function Admin() {
         ))}
       </div>
 
-      {tab === 'users' ? (
+      {tab === 'announcements' ? (
+        <div className="mt-6 space-y-5">
+          <AnnouncementComposer onPosted={refreshNotifications} />
+          <div>
+            <h2 className="mb-3 text-sm font-semibold text-muted">Posted</h2>
+            <AnnouncementList staffView onChanged={refreshNotifications} />
+          </div>
+        </div>
+      ) : tab === 'users' ? (
         <div className="mt-6">
-          <UserAdmin />
+          <UserAdmin canDelete={isAdmin} />
         </div>
       ) : (
         <div className="mt-6">

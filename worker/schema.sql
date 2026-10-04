@@ -109,3 +109,39 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_reset_user ON password_reset_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_reset_expiry ON password_reset_tokens(expires_at);
+
+-- Short non-reversible code derived from the password. Lets an owner confirm
+-- "is this still the password I set?" without ever storing or revealing it.
+ALTER TABLE users ADD COLUMN password_fingerprint TEXT;
+
+-- Staff announcements, surfaced to users as notifications.
+CREATE TABLE IF NOT EXISTS announcements (
+  id           TEXT PRIMARY KEY,
+  title        TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  author_id    TEXT,
+  author_email TEXT,
+  audience     TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all','staff')),
+  pinned       INTEGER NOT NULL DEFAULT 0,
+  published_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ann_published ON announcements(published_at DESC);
+
+-- In-app notifications. Fan-out on write, which is fine at early-access scale
+-- and keeps unread counts exact.
+CREATE TABLE IF NOT EXISTS notifications (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  body       TEXT,
+  link       TEXT,
+  actor      TEXT,
+  read_at    TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications(user_id, read_at);

@@ -33,6 +33,18 @@ export function generatePassword(len = 16) {
   return [...out].map((b) => alphabet[b % alphabet.length]).join('');
 }
 
+/**
+ * Short, non-reversible identifier for a password.
+ *
+ * This is NOT the password and cannot be reversed into it. It lets an owner
+ * confirm "is this still the password I set?" after a reset, which is the
+ * closest safe equivalent of "view the password".
+ */
+export async function passwordFingerprint(password) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
+  return toHex(digest).slice(0, 8).toUpperCase();
+}
+
 /** URL-safe random token for password-reset links. */
 export function generateResetToken() {
   const out = new Uint8Array(32);

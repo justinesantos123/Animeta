@@ -60,7 +60,7 @@ function OneTimeSecret({ secret, label, onDismiss, hint }) {
   );
 }
 
-export default function UserAdmin() {
+export default function UserAdmin({ canDelete = false }) {
   const { user } = useAuth();
   const [state, setState] = useState({ users: [], ownerEmail: null, mailConfigured: false });
   const [loading, setLoading] = useState(true);
@@ -70,8 +70,10 @@ export default function UserAdmin() {
   const [creating, setCreating] = useState(false);
   const [newEmail, setNewEmail] = useState('');
   const [newRole, setNewRole] = useState('user');
+  const [showPasswords, setShowPasswords] = useState(false);
 
-  const isOwner = state.ownerEmail && user && user.email.toLowerCase() === state.ownerEmail.toLowerCase();
+  const isOwner =
+    state.ownerEmail && user && user.email.toLowerCase() === state.ownerEmail.toLowerCase();
 
   const load = useCallback(async () => {
     try {
@@ -138,6 +140,9 @@ export default function UserAdmin() {
       await api.deleteUser(target.id);
     });
   };
+
+  /** user -> moderator -> admin, capped at admin. */
+  const nextRole = (role) => (role === 'user' ? 'moderator' : 'admin');
 
   const onCreate = async (e) => {
     e.preventDefault();
@@ -224,6 +229,7 @@ export default function UserAdmin() {
             className="rounded-lg bg-bg px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-accent"
           >
             <option value="user">User</option>
+            <option value="moderator">Moderator</option>
             <option value="admin">Admin</option>
           </select>
         </div>
@@ -241,6 +247,25 @@ export default function UserAdmin() {
         )}
       </form>
 
+      {/* Password identity. Never the password itself - a short non-reversible
+          code so staff can tell whether a credential is the one in use. */}
+      <div className="rounded-xl bg-surface p-4 ring-1 ring-white/10">
+        <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-text">
+          <input
+            type="checkbox"
+            checked={showPasswords}
+            onChange={(e) => setShowPasswords(e.target.checked)}
+            className="accent-[#7B61FF]"
+          />
+          Show password fingerprints
+        </label>
+        <p className="mt-2 text-[11px] leading-relaxed text-muted">
+          Passwords are hashed with PBKDF2 and cannot be read by anyone, including the owner. This
+          shows an 8-character code derived from the current password so you can confirm whether an
+          account is still using the password you set. Resetting an account changes the code.
+        </p>
+      </div>
+
       {/* Table */}
       <div className="overflow-x-auto rounded-xl ring-1 ring-white/10">
         <table className="w-full min-w-3xl border-collapse bg-surface">
@@ -251,6 +276,7 @@ export default function UserAdmin() {
               <th className={`${cell} font-medium`}>Joined</th>
               <th className={`${cell} font-medium`}>Watchlist</th>
               <th className={`${cell} font-medium`}>Last active</th>
+              {showPasswords && <th className={`${cell} font-medium`}>Password</th>}
               <th className={`${cell} font-medium`}>Actions</th>
             </tr>
           </thead>
@@ -275,6 +301,19 @@ export default function UserAdmin() {
                 <td className={`${cell} text-muted`}>
                   {u.lastActive ? new Date(u.lastActive.replace(' ', 'T') + 'Z').toLocaleDateString() : 'never'}
                 </td>
+                {showPasswords && (
+                  <td className={cell}>
+                    <code className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-xs text-accent">
+                      {u.passwordFingerprint || '—'}
+                    </code>
+                    {u.passwordHistory?.length > 0 && (
+                      <p className="mt-1 text-[10px] text-muted">
+                        {u.passwordHistory[0].action.replace('user.password.', '')} ·{' '}
+                        {u.passwordHistory[0].at?.replace(' ', 'T').slice(0, 10)}
+                      </p>
+                    )}
+                  </td>
+                )}
                 <td className={cell}>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -295,26 +334,28 @@ export default function UserAdmin() {
                       Send reset link
                     </button>
 
-                    {/* Role changes and deletion are owner-only actions. */}
+                    {/* Deletion: admins and the owner. Moderators cannot.
+                        Role changes: owner only. */}
                     {isOwner && !u.isOwner && (
-                      <>
-                        <button
-                          type="button"
-                          disabled={busyId === u.id}
-                          onClick={() => onRole(u, u.role === 'admin' ? 'user' : 'admin')}
-                          className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:brightness-125 disabled:opacity-50"
-                        >
-                          {u.role === 'admin' ? 'Demote' : 'Promote'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busyId === u.id}
-                          onClick={() => onDelete(u)}
-                          className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-cta transition hover:brightness-125 disabled:opacity-50"
-                        >
-                          Delete
-                        </button>
-                      </>
+                      <button
+                        type="button"
+                        disabled={busyId === u.id}
+                        onClick={() => onRole(u, nextRole(u.role))}
+                        className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:brightness-125 disabled:opacity-50"
+                      >
+                        {nextRole(u.role) === 'admin' ? 'Make admin' : 'Make moderator'}
+                      </button>
+                    )}
+
+                    {canDelete && !u.isOwner && u.id !== user?.id && (
+                      <button
+                        type="button"
+                        disabled={busyId === u.id}
+                        onClick={() => onDelete(u)}
+                        className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-cta transition hover:brightness-125 disabled:opacity-50"
+                      >
+                        Delete
+                      </button>
                     )}
                   </div>
                 </td>
