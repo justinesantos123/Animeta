@@ -4,7 +4,7 @@ import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 import UserAdmin from './UserAdmin';
 import AdminDashboard from '../components/AdminDashboard';
-import { AnnouncementComposer, AnnouncementList } from '../components/Announcements';
+import { AnnouncementManager } from '../components/Announcements';
 import { useNotifications } from '../context/NotificationsContext';
 
 const STAFF = ['admin', 'moderator'];
@@ -147,12 +147,8 @@ export default function Admin() {
       </div>
 
       {activeTab === 'announcements' ? (
-        <div className="mt-6 space-y-5">
-          <AnnouncementComposer onPosted={refreshNotifications} />
-          <div>
-            <h2 className="mb-3 text-sm font-semibold text-muted">Posted</h2>
-            <AnnouncementList staffView onChanged={refreshNotifications} />
-          </div>
+        <div className="mt-6">
+          <AnnouncementManager onChanged={refreshNotifications} />
         </div>
       ) : activeTab === 'dashboard' ? (
         <div className="mt-6">

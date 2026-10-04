@@ -1,21 +1,22 @@
-import { useEffect, useState } from 'react';
-import { AnnouncementList } from '../components/Announcements';
+import { useCallback, useEffect, useState } from 'react';
+import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
-import { useNotifications } from '../context/NotificationsContext';
+import { timeAgo } from '../utils/timeAgo';
 
 export default function Announcements() {
   const { user } = useAuth();
-  const { refresh } = useNotifications();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const isStaff = user && ['admin', 'moderator'].includes(user.role);
 
-  async function load() {
+  // useCallback so the effect below does not need to disable its dep check.
+  const load = useCallback(async () => {
     try {
-      const d = await fetch('/api/announcements', { credentials: 'same-origin' }).then((r) => r.json());
-      if (!r.ok) throw new Error(d.error || 'Could not load announcements');
+      // Use the api client: an earlier hand-rolled fetch here referenced `r`
+      // outside the .then callback where it was scoped, throwing at runtime.
+      const d = await api.listAnnouncements();
       setItems(d.announcements);
       setError(null);
     } catch (e) {
@@ -23,18 +24,13 @@ export default function Announcements() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (user) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, load]);
 
-  function fmt(iso) {
-    if (!iso) return '';
-    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z');
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-  }
+  const byStaff = new Set(['admin', 'moderator']);
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 pb-24">
@@ -87,7 +83,9 @@ export default function Announcements() {
             </div>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-muted">{a.body}</p>
             <p className="mt-3 text-[11px] text-muted">
-              {a.authorEmail || 'unknown'} · {fmt(a.publishedAt)}
+              {a.authorEmail || 'unknown'} · {timeAgo(a.publishedAt)}
+              {a.edited && ' · edited'}
+              {byStaff.has(user?.role) && ' · manage in the staff console'}
             </p>
           </article>
         ))}

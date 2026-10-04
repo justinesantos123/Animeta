@@ -46,12 +46,35 @@ for (const route of routes) {
 
   const { window } = dom;
 
-  // Minimal browser APIs the bundle touches.
-  window.fetch = async () =>
-    new window.Response('{"titles":[]}', {
-      status: 200,
+  // Route the mock by URL. A single catch-all body let pages render their
+  // loading state forever, so runtime errors inside async loaders went unseen.
+  const json = (body, status = 200) =>
+    new window.Response(JSON.stringify(body), {
+      status,
       headers: { 'content-type': 'application/json' },
     });
+
+  window.fetch = async (input) => {
+    const url = String(typeof input === 'string' ? input : input?.url || '');
+    const path = url.replace(/^https:\/\/animeta\.test/, '').split('?')[0];
+
+    if (path === '/api/titles') return json({ titles: [] });
+    if (path.startsWith('/api/titles/')) return json({ title: null, seasons: [], episodes: [] });
+    if (path === '/api/announcements') return json({ announcements: [] });
+    if (path === '/api/announcements/staff') return json({ announcements: [] });
+    if (path === '/api/admin/users') return json({ users: [], ownerEmail: null, mailConfigured: false });
+    if (path === '/api/admin/dashboard') return json({});
+    if (path === '/api/auth/me') return json({ user: null });
+    if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
+    return json({});
+  };
+
+  // An exception thrown inside an async loader rejects the promise instead of
+  // propagating, so jsdom never sees it. Capture these explicitly.
+  window.__rejections = [];
+  window.addEventListener('unhandledrejection', (e) => {
+    window.__rejections.push(String(e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
   if (!window.matchMedia) {
     window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
   }
@@ -69,6 +92,16 @@ for (const route of routes) {
   const root = window.document.getElementById('root');
   const children = root ? root.children.length : 0;
   const text = (root?.textContent || '').trim();
+
+  // Unhandled rejections are where an async loader crash actually shows up.
+  if (window.__rejections && window.__rejections.length) {
+    errors.push(...window.__rejections);
+  }
+
+  // A rendered error banner means the page failed even though React mounted.
+  if (/\b(is not defined|is not a function|Cannot read propert)/.test(text)) {
+    errors.push('rendered a runtime error: ' + text.slice(0, 120));
+  }
 
   if (errors.length) {
     failed++;

@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS announcements (
   author_id    TEXT,
   author_email TEXT,
   audience     TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all','staff')),
+  edited         INTEGER NOT NULL DEFAULT 0,
   pinned       INTEGER NOT NULL DEFAULT 0,
   published_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))

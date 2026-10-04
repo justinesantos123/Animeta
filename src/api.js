@@ -70,6 +70,8 @@ export const api = {
   listAnnouncements: () => request('/announcements'),
   listStaffAnnouncements: () => request('/announcements/staff'),
   createAnnouncement: (payload) => request('/announcements/staff', { method: 'POST', body: payload }),
+  updateAnnouncement: (id, payload) =>
+    request(`/announcements/${encodeURIComponent(id)}`, { method: 'PUT', body: payload }),
   deleteAnnouncement: (id) => request(`/announcements/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // notifications

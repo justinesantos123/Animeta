@@ -946,6 +946,7 @@ function shapeAnnouncement(row) {
     authorEmail: row.author_email,
     audience: row.audience,
     pinned: Boolean(row.pinned),
+    edited: Boolean(row.edited),
     publishedAt: row.published_at,
     updatedAt: row.updated_at,
   };
@@ -1014,6 +1015,49 @@ async function handleCreateAnnouncement(request, env) {
 
   const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
   return json({ announcement: shapeAnnouncement(row), notified: targets.length }, 201);
+}
+
+/** Author or admin can edit. Mirrors the delete rule. */
+async function handleUpdateAnnouncement(request, env, id) {
+  const auth = await requireStaff(request, env);
+  if (auth.error) return auth.error;
+
+  const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
+  if (!row) return json({ error: 'Announcement not found' }, 404);
+
+  const isAuthor = row.author_id === auth.user.id;
+  if (!isAuthor && auth.user.role !== 'admin') {
+    return json({ error: 'You can only edit your own announcements' }, 403);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const title = body.title === undefined ? row.title : String(body.title).trim();
+  const text = body.body === undefined ? row.body : String(body.body).trim();
+  const audience = body.audience === undefined ? row.audience : body.audience === 'staff' ? 'staff' : 'all';
+  const pinned = body.pinned === undefined ? row.pinned : body.pinned ? 1 : 0;
+
+  if (!title) return json({ error: 'A title is required' }, 400);
+  if (!text) return json({ error: 'Write something in the body' }, 400);
+  if (title.length > 140) return json({ error: 'Title is too long' }, 400);
+  if (text.length > 5000) return json({ error: 'Body is too long' }, 400);
+
+  await env.DB.prepare(
+    `UPDATE announcements SET title = ?, body = ?, audience = ?, pinned = ?,
+     edited = 1, updated_at = datetime('now') WHERE id = ?`,
+  )
+    .bind(title, text, audience, pinned, id)
+    .run();
+
+  await logAdminAction(env, auth.user.id, 'announcement.update', id, title);
+
+  const updated = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
+  return json({ announcement: shapeAnnouncement(updated) });
 }
 
 async function handleDeleteAnnouncement(request, env, id) {
@@ -1252,6 +1296,9 @@ export async function handleApi(request, env, url) {
       }
       if (seg.length === 3 && method === 'DELETE') {
         return handleDeleteAnnouncement(request, env, seg[2]);
+      }
+      if (seg.length === 3 && (method === 'PUT' || method === 'PATCH')) {
+        return handleUpdateAnnouncement(request, env, seg[2]);
       }
     }
 
