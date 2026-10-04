@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { useAuth } from './AuthContext';
+
+const CatalogContext = createContext(null);
 
 /**
  * Catalog + watchlist state.
@@ -143,10 +145,6 @@ export function CatalogProvider({ children }) {
 
   return <CatalogContext.Provider value={value}>{children}</CatalogContext.Provider>;
 }
-
-// Declared after use to keep the component readable; CatalogProvider closes over it.
-import { createContext, useContext } from 'react';
-const CatalogContext = createContext(null);
 
 export function useCatalog() {
   const ctx = useContext(CatalogContext);
