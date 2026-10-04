@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { DaysOffline, PresenceChip } from '../components/AdminDashboard';
 
 /**
  * Reveals a value exactly once with a copy button.
@@ -276,6 +277,7 @@ export default function UserAdmin({ canDelete = false }) {
               <th className={`${cell} font-medium`}>Joined</th>
               <th className={`${cell} font-medium`}>Watchlist</th>
               <th className={`${cell} font-medium`}>Last active</th>
+              <th className={`${cell} font-medium`}>Days offline</th>
               {showPasswords && <th className={`${cell} font-medium`}>Password</th>}
               <th className={`${cell} font-medium`}>Actions</th>
             </tr>
@@ -300,6 +302,12 @@ export default function UserAdmin({ canDelete = false }) {
                 <td className={`${cell} text-muted`}>{u.watchlistCount}</td>
                 <td className={`${cell} text-muted`}>
                   {u.lastActive ? new Date(u.lastActive.replace(' ', 'T') + 'Z').toLocaleDateString() : 'never'}
+                </td>
+                <td className={cell}>
+                  <DaysOffline days={u.daysOffline} presence={u.presence} />
+                  <div className="mt-1">
+                    <PresenceChip presence={u.presence} daysOffline={u.daysOffline} />
+                  </div>
                 </td>
                 {showPasswords && (
                   <td className={cell}>

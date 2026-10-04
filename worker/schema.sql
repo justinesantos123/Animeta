@@ -11,10 +11,15 @@ CREATE TABLE IF NOT EXISTS users (
   salt          TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',
   display_name  TEXT,
+  last_seen_at  TEXT,
+  -- Short non-reversible code derived from the password. Lets an owner confirm
+  -- "is this still the password I set?" without ever storing or revealing it.
+  password_fingerprint TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
 
 CREATE TABLE IF NOT EXISTS titles (
   id            TEXT PRIMARY KEY,
@@ -109,10 +114,6 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_reset_user ON password_reset_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_reset_expiry ON password_reset_tokens(expires_at);
-
--- Short non-reversible code derived from the password. Lets an owner confirm
--- "is this still the password I set?" without ever storing or revealing it.
-ALTER TABLE users ADD COLUMN password_fingerprint TEXT;
 
 -- Staff announcements, surfaced to users as notifications.
 CREATE TABLE IF NOT EXISTS announcements (

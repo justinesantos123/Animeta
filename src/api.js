@@ -55,6 +55,7 @@ export const api = {
   deleteTitle: (slug) => request(`/titles/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
 
   // admin user management
+  dashboard: () => request('/admin/dashboard'),
   listUsers: () => request('/admin/users'),
   createUser: (payload) => request('/admin/users', { method: 'POST', body: payload }),
   setUserRole: (id, role) =>

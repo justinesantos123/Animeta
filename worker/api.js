@@ -36,15 +36,58 @@ function readCookie(request, name) {
   return null;
 }
 
+// Throttle so an active session does not write on every single request.
+const LAST_SEEN_THROTTLE_MINUTES = 5;
+
 async function getUser(request, env) {
   const token = readCookie(request, COOKIE_NAME);
   if (!token) return null;
   const payload = await verifyToken(token, env.SESSION_SECRET);
   if (!payload?.sub) return null;
-  const row = await env.DB.prepare('SELECT id, email, role, display_name FROM users WHERE id = ?')
+
+  const row = await env.DB.prepare(
+    'SELECT id, email, role, display_name, last_seen_at FROM users WHERE id = ?',
+  )
     .bind(payload.sub)
     .first();
-  return row ?? null;
+  if (!row) return null;
+
+  // Any authenticated request counts as being present. This is what the
+  // dashboard's active/offline figures are derived from.
+  const stale =
+    !row.last_seen_at ||
+    Date.now() - new Date(row.last_seen_at.includes('T')
+      ? row.last_seen_at
+      : row.last_seen_at.replace(' ', 'T') + 'Z').getTime() >
+      LAST_SEEN_THROTTLE_MINUTES * 60 * 1000;
+
+  if (stale) {
+    await env.DB.prepare("UPDATE users SET last_seen_at = datetime('now') WHERE id = ?")
+      .bind(row.id)
+      .run();
+  }
+
+  return row;
+}
+
+/** Days since an account was last seen. null means it has never been seen. */
+function daysSince(iso) {
+  if (!iso) return null;
+  const t = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z').getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+
+// Presence buckets. ONLINE is a live-session signal; the rest are recency bands.
+const ACTIVE_DAYS = 7;
+const IDLE_DAYS = 30;
+
+function presenceOf(daysOffline) {
+  if (daysOffline === null) return 'never';
+  if (daysOffline === 0) return 'online';
+  if (daysOffline <= ACTIVE_DAYS) return 'active';
+  if (daysOffline <= IDLE_DAYS) return 'idle';
+  return 'offline';
 }
 
 function parseGenres(value) {
@@ -580,7 +623,7 @@ async function handleListUsers(request, env) {
   if (auth.error) return auth.error;
 
   const { results } = await env.DB.prepare(
-    `SELECT u.id, u.email, u.role, u.display_name, u.created_at, u.password_fingerprint,
+    `SELECT u.id, u.email, u.role, u.display_name, u.created_at, u.password_fingerprint, u.last_seen_at,
             (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.id) AS watchlist_count,
             (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active
      FROM users u
@@ -616,6 +659,9 @@ async function handleListUsers(request, env) {
       watchlistCount: u.watchlist_count,
       lastActive: u.last_active,
       isOwner: owners.includes(u.email.toLowerCase()),
+      lastSeenAt: u.last_seen_at,
+      daysOffline: daysSince(u.last_seen_at),
+      presence: presenceOf(daysSince(u.last_seen_at)),
       // Non-reversible 8-char code. Identifies a credential without revealing it.
       passwordFingerprint: u.password_fingerprint,
       passwordHistory: (history[u.id] || []).slice(0, 5),
@@ -1055,6 +1101,77 @@ async function handleMarkAllRead(request, env) {
   return json({ ok: true });
 }
 
+/**
+ * Admin-only activity dashboard. Moderators are intentionally excluded: this
+ * aggregates every account, not just the ones they help with.
+ */
+async function handleDashboard(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  const { results } = await env.DB.prepare(
+    'SELECT id, email, role, created_at, last_seen_at FROM users ORDER BY created_at ASC',
+  ).all();
+
+  const counts = { total: 0, online: 0, active: 0, idle: 0, offline: 0, never: 0 };
+  const enriched = results.map((u) => {
+    const days = daysSince(u.last_seen_at);
+    const presence = presenceOf(days);
+    counts.total += 1;
+    counts[presence] += 1;
+    return {
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      createdAt: u.created_at,
+      lastSeenAt: u.last_seen_at,
+      daysOffline: days,
+      presence,
+      isOwner: ownerEmails(env).includes(u.email.toLowerCase()),
+    };
+  });
+
+  const dayAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const since7 = dayAgo(ACTIVE_DAYS);
+  const since30 = dayAgo(IDLE_DAYS);
+
+  const library = await env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM titles) AS titles,
+            (SELECT COUNT(*) FROM watchlist) AS watchlist,
+            (SELECT COUNT(*) FROM playback_records) AS playback,
+            (SELECT COUNT(*) FROM announcements) AS announcements,
+            (SELECT COUNT(*) FROM notifications WHERE read_at IS NULL) AS unread`,
+  ).first();
+
+  const newThisWeek = enriched.filter((u) => (u.createdAt || '') >= since7).length;
+  const newThisMonth = enriched.filter((u) => (u.createdAt || '') >= since30).length;
+
+  return json({
+    generatedAt: new Date().toISOString(),
+    counts,
+    totals: {
+      newThisWeek,
+      newThisMonth,
+      titles: library?.titles ?? 0,
+      watchlist: library?.watchlist ?? 0,
+      playback: library?.playback ?? 0,
+      announcements: library?.announcements ?? 0,
+      unreadNotifications: library?.unread ?? 0,
+    },
+    // Most-recently-active first: this is what you act on.
+    mostActive: [...enriched]
+      .filter((u) => u.lastSeenAt)
+      .sort((a, b) => new Date(a.lastSeenAt) - new Date(b.lastSeenAt))
+      .slice(0, 8),
+    needsAttention: enriched
+      .filter((u) => u.presence === 'offline' || u.presence === 'never')
+      .sort((a, b) => (b.daysOffline ?? 99999) - (a.daysOffline ?? 99999))
+      .slice(0, 10),
+    recentSignups: [...enriched].reverse().slice(0, 8),
+    thresholds: { activeDays: ACTIVE_DAYS, idleDays: IDLE_DAYS },
+  });
+}
+
 // ---------------------------------------------------------------- router
 
 export async function handleApi(request, env, url) {
@@ -1073,6 +1190,9 @@ export async function handleApi(request, env, url) {
     }
 
     if (seg[1] === 'admin') {
+      if (seg[2] === 'dashboard' && seg.length === 3 && method === 'GET') {
+        return handleDashboard(request, env);
+      }
       // /api/admin/users                      GET  | POST
       // /api/admin/users/:id                   DELETE
       // /api/admin/users/:id/role              POST

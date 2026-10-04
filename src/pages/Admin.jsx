@@ -3,12 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 import UserAdmin from './UserAdmin';
+import AdminDashboard from '../components/AdminDashboard';
 import { AnnouncementComposer, AnnouncementList } from '../components/Announcements';
 import { useNotifications } from '../context/NotificationsContext';
 
 const STAFF = ['admin', 'moderator'];
 
 const TABS = [
+  { id: 'dashboard', label: 'Dashboard', staff: 'admin' },
   { id: 'catalog', label: 'Catalog', staff: 'admin' },
   { id: 'users', label: 'Users', staff: 'staff' },
   { id: 'announcements', label: 'Announcements', staff: 'staff' },
@@ -39,7 +41,7 @@ export default function Admin() {
   const { user, ready } = useAuth();
   const navigate = useNavigate();
   const { refresh: refreshNotifications } = useNotifications();
-  const [tab, setTab] = useState('catalog');
+  const [tab, setTab] = useState('dashboard');
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
@@ -61,13 +63,16 @@ export default function Admin() {
   if (!ready || !user || !STAFF.includes(user.role)) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-24 text-center">
-        <p className="text-sm text-muted">Checking access…</p>
+        <p className="text-sm text-muted">Checking accessâ€¦</p>
       </div>
     );
   }
 
   const isAdmin = user.role === 'admin';
   const visibleTabs = TABS.filter((t) => (t.staff === 'admin' ? isAdmin : true));
+
+  // A moderator demoted mid-session must not keep viewing the dashboard tab.
+  const activeTab = visibleTabs.some((t) => t.id === tab) ? tab : isAdmin ? 'dashboard' : 'users';
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -115,11 +120,11 @@ export default function Admin() {
     <div className="mx-auto max-w-4xl px-4 py-8 pb-24">
       <h1 className="text-2xl font-extrabold">Staff console</h1>
       <p className="mt-1 text-sm text-muted">
-        Signed in as {user.email} ·{' '}
+        Signed in as {user.email} Â·{' '}
         <span className={isAdmin ? 'text-accent' : 'text-muted'}>
           {isAdmin ? 'admin' : 'moderator'}
         </span>
-        {!isAdmin && ' · catalog editing and account deletion are owner/admin only'}
+        {!isAdmin && ' Â· catalog editing and account deletion are owner/admin only'}
       </p>
 
       <div className="mt-6 flex gap-1 border-b border-white/10" role="tablist">
@@ -128,10 +133,10 @@ export default function Admin() {
             key={t.id}
             type="button"
             role="tab"
-            aria-selected={tab === t.id}
+            aria-selected={activeTab === t.id}
             onClick={() => setTab(t.id)}
             className={`-mb-px border-b-2 px-4 py-2 text-sm font-semibold transition ${
-              tab === t.id
+              activeTab === t.id
                 ? 'border-accent text-text'
                 : 'border-transparent text-muted hover:text-text'
             }`}
@@ -141,7 +146,7 @@ export default function Admin() {
         ))}
       </div>
 
-      {tab === 'announcements' ? (
+      {activeTab === 'announcements' ? (
         <div className="mt-6 space-y-5">
           <AnnouncementComposer onPosted={refreshNotifications} />
           <div>
@@ -149,7 +154,11 @@ export default function Admin() {
             <AnnouncementList staffView onChanged={refreshNotifications} />
           </div>
         </div>
-      ) : tab === 'users' ? (
+      ) : activeTab === 'dashboard' ? (
+        <div className="mt-6">
+          <AdminDashboard />
+        </div>
+      ) : activeTab === 'users' ? (
         <div className="mt-6">
           <UserAdmin canDelete={isAdmin} />
         </div>
@@ -305,7 +314,7 @@ export default function Admin() {
                 disabled={busy}
                 className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
               >
-                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create title'}
+                {busy ? 'Savingâ€¦' : editing ? 'Save changes' : 'Create title'}
               </button>
               {editing && (
                 <button
