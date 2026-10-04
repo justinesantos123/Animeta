@@ -56,12 +56,12 @@ function UserMenu() {
             </p>
             {user.role === 'admin' && (
               <Link
-                to="/admin"
+                to="/kaedeentrans"
                 onClick={() => setOpen(false)}
                 className="block px-4 py-2 text-sm transition hover:bg-surface-2"
                 role="menuitem"
               >
-                Admin: manage titles
+                Admin console
               </Link>
             )}
             <button

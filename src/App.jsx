@@ -7,8 +7,11 @@ import Search from './pages/Search';
 import Watchlist from './pages/Watchlist';
 import TitleDetail from './pages/TitleDetail';
 import AuthPage from './pages/AuthPage';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import Admin from './pages/Admin';
 import NotFound from './pages/NotFound';
+import { Navigate } from 'react-router-dom';
 
 export default function App() {
   return (
@@ -29,7 +32,11 @@ export default function App() {
             <Route path="/search" element={<Search />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/auth" element={<AuthPage />} />
-            <Route path="/admin" element={<Admin />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/kaedeentrans" element={<Admin />} />
+            {/* Old path kept working so existing bookmarks do not dead-end. */}
+            <Route path="/admin" element={<Navigate to="/kaedeentrans" replace />} />
             <Route path="/title/:slug" element={<TitleDetail />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

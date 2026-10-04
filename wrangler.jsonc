@@ -21,6 +21,16 @@
       "custom_domain": true
     }
   ],
+  // Non-secret configuration. Change these when moving to a production domain.
+  "vars": {
+    // Always resolves to the admin role. Change to your real owner email.
+    "OWNER_EMAIL": "justinezantoz01@gmail.com",
+    // Public base URL, used to build password-reset links.
+    "APP_URL": "https://animeta.studykittools.com",
+    // Sender identity for reset emails. Swap for your own domain's address later,
+    // e.g. "Animeta <noreply@yourdomain.com>" once Resend verifies it.
+    "MAIL_FROM": "Animeta <noreply@onboarding@resend.dev>"
+  },
   "observability": {
     "enabled": true
   }

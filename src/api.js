@@ -54,6 +54,21 @@ export const api = {
     request(`/titles/${encodeURIComponent(slug)}`, { method: 'PUT', body: payload }),
   deleteTitle: (slug) => request(`/titles/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
 
+  // admin user management
+  listUsers: () => request('/admin/users'),
+  createUser: (payload) => request('/admin/users', { method: 'POST', body: payload }),
+  setUserRole: (id, role) =>
+    request(`/admin/users/${encodeURIComponent(id)}/role`, { method: 'POST', body: { role } }),
+  resetUserPassword: (id) =>
+    request(`/admin/users/${encodeURIComponent(id)}/password`, { method: 'POST' }),
+  deleteUser: (id) => request(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // self-service reset
+  requestPasswordReset: (email) =>
+    request('/auth/request-reset', { method: 'POST', body: { email } }),
+  resetPassword: (token, password) =>
+    request('/auth/reset-password', { method: 'POST', body: { token, password } }),
+
   // watchlist
   watchlist: () => request('/watchlist'),
   addWatchlist: (slug) => request('/watchlist', { method: 'POST', body: { slug } }),

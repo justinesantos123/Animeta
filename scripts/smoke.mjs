@@ -20,7 +20,17 @@ const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', (e) => errors.push(e.message));
 virtualConsole.on('error', (...a) => errors.push(a.map(String).join(' ')));
 
-const routes = ['/', '/auth', '/search', '/watchlist', '/title/solaris-requiem'];
+const routes = [
+  '/',
+  '/auth',
+  '/forgot-password',
+  '/reset-password?token=abc',
+  '/search',
+  '/watchlist',
+  '/kaedeentrans',
+  '/admin',
+  '/title/solaris-requiem',
+];
 let failed = 0;
 
 for (const route of routes) {

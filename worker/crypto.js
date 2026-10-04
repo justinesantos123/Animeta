@@ -21,6 +21,31 @@ export function randomSalt() {
   return randomHex(16);
 }
 
+/**
+ * A password handed to an admin who reset someone's account.
+ * Uses an unambiguous alphabet (no O/0/I/l/1) because it gets read aloud
+ * and retyped by humans.
+ */
+export function generatePassword(len = 16) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const out = new Uint8Array(len);
+  crypto.getRandomValues(out);
+  return [...out].map((b) => alphabet[b % alphabet.length]).join('');
+}
+
+/** URL-safe random token for password-reset links. */
+export function generateResetToken() {
+  const out = new Uint8Array(32);
+  crypto.getRandomValues(out);
+  return b64urlEncodeBytes(out);
+}
+
+/** Only the hash of a reset token is ever persisted. */
+export async function hashResetToken(token) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return toHex(digest);
+}
+
 export async function hashPassword(password, salt) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, [
@@ -53,6 +78,12 @@ export async function verifyPassword(password, salt, expectedHash) {
 
 function b64url(str) {
   return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlEncodeBytes(bytes) {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function b64urlDecode(str) {

@@ -5,10 +5,14 @@ import {
   verifyToken,
   randomSalt,
   randomHex,
+  generatePassword,
+  generateResetToken,
+  hashResetToken,
   sessionCookie,
   clearSessionCookie,
   COOKIE_NAME,
 } from './crypto.js';
+import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -99,9 +103,10 @@ async function handleSignup(request, env) {
   const id = randomHex(16);
   const salt = randomSalt();
   const hash = await hashPassword(password, salt);
-  // First account to register becomes admin, so a fresh install is manageable.
-  const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
-  const role = count?.n === 0 ? 'admin' : 'user';
+  // Admin is granted by OWNER_EMAIL or by an explicit promotion. Never by
+  // registration order -- otherwise whoever signs up first becomes owner.
+  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  const role = owner && email === owner ? 'admin' : 'user';
 
   await env.DB.prepare(
     'INSERT INTO users (id, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?)',
@@ -216,6 +221,20 @@ async function requireAdmin(request, env) {
   if (!user) return { error: json({ error: 'Authentication required' }, 401) };
   if (user.role !== 'admin') return { error: json({ error: 'Admin access required' }, 403) };
   return { user };
+}
+
+/**
+ * Owner-only tier. OWNER_EMAIL is a config var so promoting the owner does not
+ * depend on who happened to register first.
+ */
+async function requireOwner(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth;
+  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  if (owner && auth.user.email.toLowerCase() !== owner) {
+    return { error: json({ error: 'Only the site owner can do this' }, 403) };
+  }
+  return auth;
 }
 
 function slugify(value) {
@@ -470,6 +489,284 @@ async function handleContinueWatching(request, env) {
   });
 }
 
+// ------------------------------------------------- user management (admin)
+
+const RESET_TTL_MINUTES = 60;
+
+async function handleListUsers(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  const { results } = await env.DB.prepare(
+    `SELECT u.id, u.email, u.role, u.display_name, u.created_at,
+            (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.id) AS watchlist_count,
+            (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active
+     FROM users u
+     ORDER BY u.created_at ASC`,
+  ).all();
+
+  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+
+  // NOTE: password_hash and salt are deliberately never selected here.
+  return json({
+    users: results.map((u) => ({
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      displayName: u.display_name,
+      createdAt: u.created_at,
+      watchlistCount: u.watchlist_count,
+      lastActive: u.last_active,
+      isOwner: u.email.toLowerCase() === owner,
+    })),
+    ownerEmail: owner || null,
+    mailConfigured: mailConfigured(env),
+  });
+}
+
+/** Owner-created account with a known password. Useful for early-access logins. */
+async function handleCreateUser(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const email = String(body.email ?? '').trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return json({ error: 'Enter a valid email address' }, 400);
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+  if (existing) return json({ error: 'An account with that email already exists' }, 409);
+
+  // Generate a strong password unless the admin supplied one.
+  const supplied = typeof body.password === 'string' && body.password.length > 0;
+  const password = supplied ? String(body.password) : generatePassword(16);
+  if (!validPassword(password)) {
+    return json({ error: 'Password must be at least 8 characters' }, 400);
+  }
+
+  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  const requestedRole = body.role === 'admin' ? 'admin' : 'user';
+  // Only the owner may mint other admins.
+  const isOwner = owner && auth.user.email.toLowerCase() === owner;
+  const role = requestedRole === 'admin' && !isOwner ? 'user' : requestedRole;
+
+  const id = randomHex(16);
+  const salt = randomSalt();
+  const hash = await hashPassword(password, salt);
+
+  await env.DB.prepare(
+    'INSERT INTO users (id, email, password_hash, salt, role, display_name) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+    .bind(id, email, hash, salt, role, body.displayName ?? null)
+    .run();
+
+  await logAdminAction(env, auth.user.id, 'user.create', id, email);
+
+  return json(
+    {
+      user: { id, email, role },
+      // Returned exactly once so the admin can hand it over. Never stored readable.
+      password: supplied ? null : password,
+    },
+    201,
+  );
+}
+
+/** Owner only: promote or demote an admin. */
+async function handleSetRole(request, env, targetId) {
+  const auth = await requireOwner(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const role = body.role;
+  if (role !== 'admin' && role !== 'user') {
+    return json({ error: 'role must be admin or user' }, 400);
+  }
+
+  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+    .bind(targetId)
+    .first();
+  if (!target) return json({ error: 'User not found' }, 404);
+
+  // Guard against the owner locking themselves out of the admin tier.
+  if (owner && target.email.toLowerCase() === owner && role !== 'admin') {
+    return json({ error: 'The owner cannot be demoted' }, 400);
+  }
+
+  await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(role, target.id).run();
+  await logAdminAction(env, auth.user.id, `user.role.${role}`, target.id, target.email);
+
+  return json({ ok: true, role });
+}
+
+/**
+ * Admin resets a user's password. The new value is generated, hashed with a
+ * fresh salt, and returned once in this response. It is never persisted in
+ * readable form, so it cannot be displayed again later.
+ */
+async function handleAdminResetPassword(request, env, targetId) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+    .bind(targetId)
+    .first();
+  if (!target) return json({ error: 'User not found' }, 404);
+
+  const password = generatePassword(16);
+  const salt = randomSalt();
+  const hash = await hashPassword(password, salt);
+
+  await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?')
+    .bind(hash, salt, target.id)
+    .run();
+
+  // Existing sessions keep working; force re-login with the new password.
+  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(target.id).run();
+  await logAdminAction(env, auth.user.id, 'user.password.reset', target.id, target.email);
+
+  return json({
+    ok: true,
+    email: target.email,
+    password,
+    notice: 'Shown once. Copy it now - it cannot be retrieved later.',
+  });
+}
+
+/** Owner only: delete an account. */
+async function handleDeleteUser(request, env, targetId) {
+  const auth = await requireOwner(request, env);
+  if (auth.error) return auth.error;
+
+  const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+    .bind(targetId)
+    .first();
+  if (!target) return json({ error: 'User not found' }, 404);
+
+  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  if (owner && target.email.toLowerCase() === owner) {
+    return json({ error: 'The owner cannot be deleted' }, 400);
+  }
+  if (target.id === auth.user.id) return json({ error: 'You cannot delete your own account' }, 400);
+
+  await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id).run();
+  await logAdminAction(env, auth.user.id, 'user.delete', target.id, target.email);
+
+  return json({ ok: true });
+}
+
+async function logAdminAction(env, adminId, action, targetId, detail) {
+  await env.DB.prepare(
+    'INSERT INTO admin_action_log (id, admin_id, action, target_id, detail) VALUES (?, ?, ?, ?, ?)',
+  )
+    .bind(randomHex(16), adminId, action, targetId ?? null, detail ?? null)
+    .run();
+}
+
+// ----------------------------------------------- self-service password reset
+
+async function handleRequestReset(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const email = String(body.email ?? '').trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return json({ error: 'Enter a valid email address' }, 400);
+
+  // Always the same response so this cannot be used to discover accounts.
+  const accepted = { ok: true, message: 'If that account exists, a reset link is on its way.' };
+
+  const user = await env.DB.prepare('SELECT id, email FROM users WHERE email = ?').bind(email).first();
+  if (!user) return json(accepted);
+
+  const token = generateResetToken();
+  const tokenHash = await hashResetToken(token);
+  const expiresAt = new Date(Date.now() + RESET_TTL_MINUTES * 60 * 1000).toISOString();
+
+  // One live token per user keeps the table tidy.
+  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(user.id).run();
+  await env.DB.prepare(
+    'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+  )
+    .bind(randomHex(16), user.id, tokenHash, expiresAt)
+    .run();
+
+  const appUrl = String(env.APP_URL || new URL(request.url).origin).replace(/\/+$/, '');
+  const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
+
+  const mail = await sendPasswordResetEmail(env, {
+    to: user.email,
+    resetUrl,
+    expiresMinutes: RESET_TTL_MINUTES,
+  });
+
+  return json({
+    ...accepted,
+    // Without a provider configured, hand the link back so the flow stays usable.
+    delivery: mail.sent ? 'email' : 'unavailable',
+    deliveryReason: mail.sent ? undefined : mail.reason,
+    ...(mail.sent ? {} : { resetUrl }),
+  });
+}
+
+async function handleResetPassword(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const token = String(body.token ?? '');
+  const password = String(body.password ?? '');
+  if (!token) return json({ error: 'Missing reset token' }, 400);
+  if (!validPassword(password)) return json({ error: 'Password must be at least 8 characters' }, 400);
+
+  const tokenHash = await hashResetToken(token);
+  const row = await env.DB.prepare(
+    'SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?',
+  )
+    .bind(tokenHash)
+    .first();
+
+  if (!row) return json({ error: 'This reset link is not valid' }, 400);
+  if (row.used_at) return json({ error: 'This reset link has already been used' }, 400);
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    return json({ error: 'This reset link has expired. Request a new one.' }, 400);
+  }
+
+  const salt = randomSalt();
+  const hash = await hashPassword(password, salt);
+
+  await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?')
+    .bind(hash, salt, row.user_id)
+    .run();
+
+  // Burn the token so a leaked link cannot be replayed.
+  await env.DB.prepare(
+    "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?",
+  )
+    .bind(row.id)
+    .run();
+
+  return json({ ok: true });
+}
+
 // ---------------------------------------------------------------- router
 
 export async function handleApi(request, env, url) {
@@ -483,6 +780,30 @@ export async function handleApi(request, env, url) {
       if (seg[2] === 'login' && method === 'POST') return handleLogin(request, env);
       if (seg[2] === 'logout' && method === 'POST') return handleLogout(request, env);
       if (seg[2] === 'me' && method === 'GET') return handleMe(request, env);
+      if (seg[2] === 'request-reset' && method === 'POST') return handleRequestReset(request, env);
+      if (seg[2] === 'reset-password' && method === 'POST') return handleResetPassword(request, env);
+    }
+
+    if (seg[1] === 'admin') {
+      // /api/admin/users                      GET  | POST
+      // /api/admin/users/:id                   DELETE
+      // /api/admin/users/:id/role              POST
+      // /api/admin/users/:id/password          POST
+      if (seg[2] === 'users' && seg.length === 3 && method === 'GET') {
+        return handleListUsers(request, env);
+      }
+      if (seg[2] === 'users' && seg.length === 3 && method === 'POST') {
+        return handleCreateUser(request, env);
+      }
+      if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'role' && method === 'POST') {
+        return handleSetRole(request, env, seg[3]);
+      }
+      if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'password' && method === 'POST') {
+        return handleAdminResetPassword(request, env, seg[3]);
+      }
+      if (seg[2] === 'users' && seg.length === 4 && method === 'DELETE') {
+        return handleDeleteUser(request, env, seg[3]);
+      }
     }
 
     if (seg[1] === 'titles') {
