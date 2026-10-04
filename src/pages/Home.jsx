@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { titleTypeLabel } from '../lib/titleTypes';
 import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
 
@@ -13,7 +14,7 @@ export default function Home() {
       <div className="flex min-h-[60vh] items-center justify-center">
         <span className="flex items-center gap-3 text-sm text-muted">
           <span className="h-5 w-5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-          Loading catalog…
+          Loading catalogÃ¢â‚¬Â¦
         </span>
       </div>
     );
@@ -51,7 +52,7 @@ export default function Home() {
           <div className="absolute inset-0 bg-gradient-to-t from-bg via-bg/70 to-bg/20" />
           <div className="relative mx-auto max-w-7xl px-4 py-20 md:py-32">
             <p className="text-xs font-semibold uppercase tracking-widest text-accent">
-              Featured {featured.type}
+              Featured {titleTypeLabel(featured.type)}
             </p>
             <h1 className="mt-2 max-w-2xl text-3xl font-extrabold leading-tight md:text-5xl">
               {featured.title}
@@ -61,7 +62,7 @@ export default function Home() {
               <span className="font-semibold text-accent">{Number(featured.rating).toFixed(1)}</span>
               <span>{featured.releaseDate?.slice(0, 4)}</span>
               <span>{featured.runtime}</span>
-              <span>{featured.genres.join(' · ')}</span>
+              <span>{featured.genres.join(' Ã‚Â· ')}</span>
             </div>
             <div className="mt-6 flex flex-wrap gap-3">
               <Link

@@ -9,6 +9,7 @@ export default function AuthPage() {
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -34,7 +35,7 @@ export default function AuthPage() {
     setBusy(true);
     try {
       if (mode === 'login') await login(email, password);
-      else await signup(email, password);
+      else await signup(email, password, username.trim());
       navigate('/');
     } catch (err) {
       setError(err.message);
@@ -59,6 +60,31 @@ export default function AuthPage() {
         </p>
 
         <form onSubmit={onSubmit} className="mt-6 space-y-3">
+          {mode === 'signup' && (
+            <div>
+              <label htmlFor="username" className="mb-1 block text-xs font-medium text-muted">
+                Username
+              </label>
+              <input
+                id="username"
+                type="text"
+                autoComplete="username"
+                required
+                minLength={3}
+                maxLength={30}
+                pattern="[A-Za-z0-9][A-Za-z0-9_\-]{2,29}"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className={inputClass}
+                placeholder="your_handle"
+                aria-describedby="username-help"
+              />
+              <p id="username-help" className="mt-1 text-[11px] text-muted">
+                3-30 characters. Letters, numbers, underscores and hyphens. Must be unique.
+              </p>
+            </div>
+          )}
+
           <div>
             <label htmlFor="email" className="mb-1 block text-xs font-medium text-muted">
               Email

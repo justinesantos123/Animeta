@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { NavLink, Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { NavLink, Link } from 'react-router-dom';
+import { useAuth, preferredName } from '../context/AuthContext';
 import NotificationBell from './NotificationBell';
+import SignOutDialog from './SignOutDialog';
 
 const STAFF = ['admin', 'moderator'];
 
@@ -12,10 +13,28 @@ const LINKS = [
   { to: '/watchlist', label: 'Library', icon: 'M4 4h3v16H4zm6.5 0h3v16h-3zM17 4h3v16h-3z' },
 ];
 
+function RoleBadge({ role }) {
+  if (role === 'admin') {
+    return (
+      <span className="mb-1 inline-block rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+        admin
+      </span>
+    );
+  }
+  if (role === 'moderator') {
+    return (
+      <span className="mb-1 inline-block rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+        moderator
+      </span>
+    );
+  }
+  return null;
+}
+
 function UserMenu() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   if (!user) {
     return (
@@ -28,6 +47,8 @@ function UserMenu() {
     );
   }
 
+  const handle = user.username || user.email;
+
   return (
     <div className="relative">
       <button
@@ -38,9 +59,9 @@ function UserMenu() {
         className="flex items-center gap-2 rounded-lg bg-surface px-2.5 py-1.5 text-sm ring-1 ring-white/10 transition hover:bg-surface-2"
       >
         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-white">
-          {user.email.charAt(0).toUpperCase()}
+          {handle.charAt(0).toUpperCase()}
         </span>
-        <span className="hidden max-w-28 truncate sm:inline">{user.email}</span>
+        <span className="hidden max-w-28 truncate sm:inline">{handle}</span>
       </button>
 
       {open && (
@@ -48,16 +69,23 @@ function UserMenu() {
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden="true" />
           <div
             role="menu"
-            className="absolute right-0 z-20 mt-2 w-52 overflow-hidden rounded-xl bg-surface ring-1 ring-white/10"
+            className="absolute right-0 z-20 mt-2 w-56 overflow-hidden rounded-xl bg-surface ring-1 ring-white/10"
           >
-            <p className="border-b border-white/5 px-4 py-2.5 text-xs text-muted">
-              {user.role === 'admin' && (
-                <span className="mb-1 inline-block rounded bg-accent/20 px-1.5 py-0.5 font-semibold text-accent">
-                  admin
-                </span>
-              )}
-              {user.displayName || user.email}
-            </p>
+            <div className="border-b border-white/5 px-4 py-2.5">
+              <RoleBadge role={user.role} />
+              <p className="truncate text-xs font-semibold text-text">{preferredName(user)}</p>
+              <p className="truncate text-[11px] text-muted">{user.email}</p>
+            </div>
+
+            <Link
+              to="/profile"
+              onClick={() => setOpen(false)}
+              className="block px-4 py-2 text-sm transition hover:bg-surface-2"
+              role="menuitem"
+            >
+              Profile &amp; username
+            </Link>
+
             {STAFF.includes(user.role) && (
               <Link
                 to="/kaedeentrans"
@@ -68,21 +96,23 @@ function UserMenu() {
                 Staff console
               </Link>
             )}
+
             <button
               type="button"
               role="menuitem"
-              onClick={async () => {
+              onClick={() => {
                 setOpen(false);
-                await logout();
-                navigate('/');
+                setConfirmSignOut(true);
               }}
-              className="block w-full px-4 py-2 text-left text-sm transition hover:bg-surface-2"
+              className="block w-full px-4 py-2 text-left text-sm text-cta transition hover:bg-surface-2"
             >
               Sign out
             </button>
           </div>
         </>
       )}
+
+      <SignOutDialog open={confirmSignOut} onCancel={() => setConfirmSignOut(false)} />
     </div>
   );
 }

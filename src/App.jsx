@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import { TopNav, BottomNav } from './components/Nav';
+import WelcomeBanner from './components/WelcomeBanner';
 import { AuthProvider } from './context/AuthContext';
 import { CatalogProvider } from './context/CatalogContext';
 import { NotificationsProvider } from './context/NotificationsContext';
@@ -12,6 +13,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import Announcements from './pages/Announcements';
 import Admin from './pages/Admin';
+import Profile from './pages/Profile';
 import NotFound from './pages/NotFound';
 import { Navigate } from 'react-router-dom';
 
@@ -28,6 +30,7 @@ export default function App() {
         </a>
 
         <TopNav />
+        <WelcomeBanner />
 
         <main id="main">
           <Routes>
@@ -38,6 +41,7 @@ export default function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/announcements" element={<Announcements />} />
+            <Route path="/profile" element={<Profile />} />
             <Route path="/kaedeentrans" element={<Admin />} />
             {/* Old path kept working so existing bookmarks do not dead-end. */}
             <Route path="/admin" element={<Navigate to="/kaedeentrans" replace />} />

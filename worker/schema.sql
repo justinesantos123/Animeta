@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
   salt          TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',
   display_name  TEXT,
+  -- Public handle, chosen at signup and shown in the UI. Unique, case-insensitive.
+  username      TEXT,
   last_seen_at  TEXT,
   -- Short non-reversible code derived from the password. Lets an owner confirm
   -- "is this still the password I set?" without ever storing or revealing it.
@@ -24,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
 CREATE TABLE IF NOT EXISTS titles (
   id            TEXT PRIMARY KEY,
   slug          TEXT NOT NULL UNIQUE,
-  type          TEXT NOT NULL CHECK (type IN ('anime','movie','series')),
+  type          TEXT NOT NULL CHECK (type IN ('anime','movie','series','ai')),
   title         TEXT NOT NULL,
   synopsis      TEXT NOT NULL DEFAULT '',
   genres        TEXT NOT NULL DEFAULT '[]',

@@ -4,6 +4,7 @@ import { api } from '../api';
 import { useCatalog } from '../context/CatalogContext';
 import { useAuth } from '../context/AuthContext';
 import VideoPlayer from '../components/VideoPlayer';
+import { titleTypeLabel } from '../lib/titleTypes';
 import TitleCard from '../components/TitleCard';
 
 export default function TitleDetail() {
@@ -85,7 +86,7 @@ export default function TitleDetail() {
             <span className="font-semibold text-accent">{Number(item.rating).toFixed(1)}</span>
             <span>{item.releaseDate}</span>
             <span>{item.runtime}</span>
-            <span className="uppercase tracking-wide">{item.type}</span>
+            <span className="uppercase tracking-wide">{titleTypeLabel(item.type)}</span>
           </div>
         </div>
       </section>

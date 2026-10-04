@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { titleTypeLabel } from '../lib/titleTypes';
 
 export default function TitleCard({ item }) {
   return (
@@ -28,13 +29,13 @@ export default function TitleCard({ item }) {
         </span>
 
         <span className="absolute right-2 top-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-          {item.type}
+          {titleTypeLabel(item.type)}
         </span>
       </div>
 
       <div className="p-3">
         <h3 className="truncate text-sm font-semibold text-text">{item.title}</h3>
-        <p className="mt-0.5 truncate text-xs text-muted">{(item.genres || []).join(' · ')}</p>
+        <p className="mt-0.5 truncate text-xs text-muted">{(item.genres || []).join(' Â· ')}</p>
       </div>
     </Link>
   );

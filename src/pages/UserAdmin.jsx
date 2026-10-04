@@ -71,6 +71,7 @@ export default function UserAdmin({ canDelete = false }) {
   const [busyId, setBusyId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [newEmail, setNewEmail] = useState('');
+  const [newUsername, setNewUsername] = useState('');
   const [newRole, setNewRole] = useState('user');
   const [showPasswords, setShowPasswords] = useState(false);
 
@@ -151,11 +152,12 @@ export default function UserAdmin({ canDelete = false }) {
     setCreating(true);
     setError(null);
     try {
-      const d = await api.createUser({ email: newEmail, role: newRole });
+      const d = await api.createUser({ email: newEmail, role: newRole, username: newUsername.trim() });
       if (d.password) {
         setSecret({ value: d.password, label: `Password for ${d.email}` });
       }
       setNewEmail('');
+      setNewUsername('');
       await load();
     } catch (err) {
       setError(err.message);
@@ -211,15 +213,33 @@ export default function UserAdmin({ canDelete = false }) {
             New user email
           </label>
           <input
-            id="new-user-email"
-            type="email"
-            required
-            value={newEmail}
-            onChange={(e) => setNewEmail(e.target.value)}
-            placeholder="tester@example.com"
-            className="w-full rounded-lg bg-bg px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
-          />
-        </div>
+id="new-user-email"
+              type="email"
+              required
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              className={INPUT}
+            />
+            <p className="mt-1 text-[11px] text-muted">
+              Leave the username blank to derive one from the email address.
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="new-user-username" className="mb-1 block text-xs font-medium text-muted">
+              Username (optional)
+            </label>
+            <input
+              id="new-user-username"
+              type="text"
+              maxLength={30}
+              pattern="[A-Za-z0-9][A-Za-z0-9_\-]{2,29}"
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              className={INPUT}
+              placeholder="their_handle"
+            />
+          </div>
         <div>
           <label htmlFor="new-user-role" className="mb-1 block text-xs font-medium text-muted">
             Role
@@ -273,6 +293,7 @@ export default function UserAdmin({ canDelete = false }) {
         <table className="w-full min-w-3xl border-collapse bg-surface">
           <thead>
             <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-muted">
+              <th className={`${cell} font-medium`}>Username</th>
               <th className={`${cell} font-medium`}>Email</th>
               <th className={`${cell} font-medium`}>Role</th>
               <th className={`${cell} font-medium`}>Joined</th>
@@ -286,6 +307,9 @@ export default function UserAdmin({ canDelete = false }) {
           <tbody className="divide-y divide-white/5">
             {state.users.map((u) => (
               <tr key={u.id}>
+                <td className={cell}>
+                  <span className="text-text">@{u.username || '—'}</span>
+                </td>
                 <td className={cell}>
                   <span className="text-text">{u.email}</span>
                   {u.isOwner && (

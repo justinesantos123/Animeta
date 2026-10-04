@@ -158,6 +158,21 @@ export const titles = [
     videoUrl: HLS_SAMPLES[0],
     subtitlesUrl: SUBS,
   },
+  {
+    id: 'lantern-of-lost-things',
+    type: 'ai',
+    title: 'Lantern of Lost Things',
+    synopsis:
+      'Generated end-to-end by a diffusion model and a fine-tuned voice set: a lighthouse keeper catalogues every object the tide returns, until one entry is her own name.',
+    genres: ['Sci-Fi', 'Drama', 'Experimental'],
+    releaseDate: '2026-02-18',
+    runtime: '1h 31m',
+    rating: 8.2,
+    posterUrl: 'https://picsum.photos/seed/animetaai1/400/600',
+    backdropUrl: 'https://picsum.photos/seed/animetaai1b/1600/900',
+    videoUrl: HLS_SAMPLES[1],
+    subtitlesUrl: SUBS,
+  },
 ];
 
 export const featured = titles[0];

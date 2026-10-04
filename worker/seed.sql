@@ -164,6 +164,22 @@ VALUES
   'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
   '/subtitles/sample.vtt',
   0
+),
+(
+  'seed-011',
+  'lantern-of-lost-things',
+  'ai',
+  'Lantern of Lost Things',
+  'Generated end-to-end by a diffusion model and a fine-tuned voice set: a lighthouse keeper catalogues every object the tide returns, until one entry is her own name.',
+  '["Sci-Fi","Drama","Experimental"]',
+  '2026-02-18',
+  '1h 31m',
+  8.2,
+  'https://picsum.photos/seed/animetaai1/400/600',
+  'https://picsum.photos/seed/animetaai1b/1600/900',
+  'https://test-streams.mux.dev/test_001/stream.m3u8',
+  '/subtitles/sample.vtt',
+  0
 );
 
 -- Give the flagship series one season of episodes so the detail page has a rail.

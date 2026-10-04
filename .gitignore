@@ -19,3 +19,7 @@ npm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local throwaway session key generated during local dev. The real
+# SESSION_SECRET is a wrangler secret and never lives in the repo.
+.session-secret.tmp

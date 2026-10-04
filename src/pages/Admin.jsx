@@ -178,9 +178,10 @@ export default function Admin() {
                   Type
                 </label>
                 <select id="type" value={form.type} onChange={set('type')} className={INPUT}>
-                  <option value="series">Series</option>
+<option value="series">Series</option>
                   <option value="movie">Movie</option>
                   <option value="anime">Anime</option>
+                  <option value="ai">AI Generated</option>
                 </select>
               </div>
 

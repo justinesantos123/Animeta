@@ -88,7 +88,7 @@ async function getUser(request, env) {
   if (!payload?.sub) return null;
 
   const row = await env.DB.prepare(
-    'SELECT id, email, role, display_name, last_seen_at FROM users WHERE id = ?',
+    'SELECT id, email, username, role, display_name, last_seen_at FROM users WHERE id = ?',
   )
     .bind(payload.sub)
     .first();
@@ -199,6 +199,50 @@ function shapeTitle(row) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// 3-30 chars, letters/digits/underscore/hyphen, must start alphanumeric.
+const USERNAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,29}$/;
+
+const RESERVED_USERNAMES = new Set([
+  'admin', 'administrator', 'root', 'system', 'support', 'help',
+  'api', 'www', 'me', 'staff', 'moderator', 'kaedeentrans',
+]);
+
+function validateUsername(raw) {
+  const username = String(raw ?? '').trim();
+  if (!username) return { error: 'Choose a username' };
+  if (!USERNAME_RE.test(username)) {
+    return {
+      error:
+        'Username must be 3-30 characters, using letters, numbers, underscores or hyphens, and start with a letter or number',
+    };
+  }
+  if (RESERVED_USERNAMES.has(username.toLowerCase())) {
+    return { error: 'That username is reserved' };
+  }
+  return { username };
+}
+
+/** Derives a unique username from the email when none was supplied. */
+async function deriveUsername(env, email) {
+  const base = email
+    .split('@')[0]
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 24);
+  let candidate = (base || 'user').replace(/^[^a-z0-9]+/, '').slice(0, 24) || 'user';
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (candidate.length < 3) candidate = `${candidate}user`;
+    const taken = await env.DB.prepare(
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
+    )
+      .bind(candidate)
+      .first();
+    if (!taken) return candidate;
+    candidate = `${base.slice(0, 22)}${attempt + 1}`;
+  }
+  return `${base}${randomHex(3)}`;
+}
 
 function validPassword(pw) {
   return typeof pw === 'string' && pw.length >= 8 && pw.length <= 200;
@@ -220,8 +264,19 @@ async function handleSignup(request, env) {
   if (!EMAIL_RE.test(email)) return json({ error: 'Enter a valid email address' }, 400);
   if (!validPassword(password)) return json({ error: 'Password must be at least 8 characters' }, 400);
 
+  // Username is required at signup.
+  const nameCheck = validateUsername(body.username);
+  if (nameCheck.error) return json({ error: nameCheck.error }, 400);
+
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return json({ error: 'An account with that email already exists' }, 409);
+
+  const nameTaken = await env.DB.prepare(
+    'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
+  )
+    .bind(nameCheck.username)
+    .first();
+  if (nameTaken) return json({ error: 'That username is already taken' }, 409);
 
   const id = randomHex(16);
   const salt = randomSalt();
@@ -231,13 +286,26 @@ async function handleSignup(request, env) {
   const role = ownerEmails(env).includes(email) ? 'admin' : 'user';
 
   await env.DB.prepare(
-    'INSERT INTO users (id, email, password_hash, salt, role, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO users (id, email, username, display_name, password_hash, salt, role, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, email, hash, salt, role, await passwordFingerprint(password))
+    .bind(
+      id,
+      email,
+      nameCheck.username,
+      body.displayName ? String(body.displayName).slice(0, 60) : null,
+      hash,
+      salt,
+      role,
+      await passwordFingerprint(password),
+    )
     .run();
 
   const token = await signToken({ sub: id, role }, env.SESSION_SECRET);
-  return json({ user: { id, email, role } }, 201, { 'set-cookie': sessionCookie(token) });
+  return json(
+    { user: { id, email, username: nameCheck.username, role } },
+    201,
+    { 'set-cookie': sessionCookie(token) },
+  );
 }
 
 async function handleLogin(request, env) {
@@ -252,7 +320,7 @@ async function handleLogin(request, env) {
   const password = String(body.password ?? '');
 
   const row = await env.DB.prepare(
-    'SELECT id, email, password_hash, salt, role, display_name FROM users WHERE email = ?',
+    'SELECT id, email, username, display_name, password_hash, salt, role FROM users WHERE email = ?',
   )
     .bind(email)
     .first();
@@ -265,7 +333,15 @@ async function handleLogin(request, env) {
 
   const token = await signToken({ sub: row.id, role: row.role }, env.SESSION_SECRET);
   return json(
-    { user: { id: row.id, email: row.email, role: row.role, displayName: row.display_name } },
+    {
+      user: {
+        id: row.id,
+        email: row.email,
+        username: row.username,
+        displayName: row.display_name,
+        role: row.role,
+      },
+    },
     200,
     { 'set-cookie': sessionCookie(token) },
   );
@@ -279,7 +355,13 @@ async function handleMe(request, env) {
   const user = await getUser(request, env);
   if (!user) return json({ user: null }, 200);
   return json({
-    user: { id: user.id, email: user.email, role: user.role, displayName: user.display_name },
+    user: {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role,
+      displayName: user.display_name,
+    },
   });
 }
 
@@ -292,7 +374,7 @@ async function handleListTitles(request, env, url) {
   const where = [];
   const binds = [];
 
-  if (type && ['anime', 'movie', 'series'].includes(type)) {
+  if (type && ['anime', 'movie', 'series', 'ai'].includes(type)) {
     where.push('type = ?');
     binds.push(type);
   }
@@ -406,7 +488,7 @@ async function handleCreateTitle(request, env) {
   const type = String(body.type ?? '');
   const name = String(body.title ?? '').trim();
   if (!name) return json({ error: 'Title is required' }, 400);
-  if (!['anime', 'movie', 'series'].includes(type)) {
+  if (!['anime', 'movie', 'series', 'ai'].includes(type)) {
     return json({ error: 'type must be anime, movie or series' }, 400);
   }
 
@@ -702,7 +784,7 @@ async function handleListUsers(request, env) {
   if (auth.error) return auth.error;
 
   const { results } = await env.DB.prepare(
-    `SELECT u.id, u.email, u.role, u.display_name, u.created_at, u.password_fingerprint, u.last_seen_at,
+    `SELECT u.id, u.email, u.username, u.role, u.display_name, u.created_at, u.password_fingerprint, u.last_seen_at,
             (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.id) AS watchlist_count,
             (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active
      FROM users u
@@ -733,6 +815,7 @@ async function handleListUsers(request, env) {
       id: u.id,
       email: u.email,
       role: u.role,
+      username: u.username,
       displayName: u.display_name,
       createdAt: u.created_at,
       watchlistCount: u.watchlist_count,
@@ -768,6 +851,23 @@ async function handleCreateUser(request, env) {
   const email = String(body.email ?? '').trim().toLowerCase();
   if (!EMAIL_RE.test(email)) return json({ error: 'Enter a valid email address' }, 400);
 
+  // Username is optional when staff create an account: derive one from the
+  // email rather than making the admin invent it.
+  let username;
+  if (body.username) {
+    const nameCheck = validateUsername(body.username);
+    if (nameCheck.error) return json({ error: nameCheck.error }, 400);
+    const taken = await env.DB.prepare(
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
+    )
+      .bind(nameCheck.username)
+      .first();
+    if (taken) return json({ error: 'That username is already taken' }, 409);
+    username = nameCheck.username;
+  } else {
+    username = await deriveUsername(env, email);
+  }
+
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return json({ error: 'An account with that email already exists' }, 409);
 
@@ -789,16 +889,25 @@ async function handleCreateUser(request, env) {
   const hash = await hashPassword(password, salt);
 
   await env.DB.prepare(
-    'INSERT INTO users (id, email, password_hash, salt, role, display_name, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO users (id, email, username, password_hash, salt, role, display_name, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, email, hash, salt, role, body.displayName ?? null, await passwordFingerprint(password))
+    .bind(
+      id,
+      email,
+      username,
+      hash,
+      salt,
+      role,
+      body.displayName ?? null,
+      await passwordFingerprint(password),
+    )
     .run();
 
-  await logAdminAction(env, auth.user.id, 'user.create', id, email);
+  await logAdminAction(env, auth.user.id, 'user.create', id, `${email} (@${username})`);
 
   return json(
     {
-      user: { id, email, role },
+      user: { id, email, username, role },
       // Returned exactly once so the admin can hand it over. Never stored readable.
       password: supplied ? null : password,
     },
@@ -1233,7 +1342,7 @@ async function handleDashboard(request, env) {
   if (auth.error) return auth.error;
 
   const { results } = await env.DB.prepare(
-    'SELECT id, email, role, created_at, last_seen_at FROM users ORDER BY created_at ASC',
+    'SELECT id, email, username, role, created_at, last_seen_at FROM users ORDER BY created_at ASC',
   ).all();
 
   const counts = { total: 0, online: 0, active: 0, idle: 0, offline: 0, never: 0 };
@@ -1246,6 +1355,7 @@ async function handleDashboard(request, env) {
       id: u.id,
       email: u.email,
       role: u.role,
+      username: u.username,
       createdAt: u.created_at,
       lastSeenAt: u.last_seen_at,
       daysOffline: days,
@@ -1481,6 +1591,45 @@ async function handleUpdateSettings(request, env) {
   return handleGetSettings(request, env);
 }
 
+/** Change your own username or display name. */
+async function handleUpdateProfile(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  let username = user.username;
+  if (body.username !== undefined) {
+    const nameCheck = validateUsername(body.username);
+    if (nameCheck.error) return json({ error: nameCheck.error }, 400);
+    const taken = await env.DB.prepare(
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND id <> ?',
+    )
+      .bind(nameCheck.username, user.id)
+      .first();
+    if (taken) return json({ error: 'That username is already taken' }, 409);
+    username = nameCheck.username;
+  }
+
+  const displayName =
+    body.displayName === undefined
+      ? user.display_name
+      : body.displayName
+        ? String(body.displayName).trim().slice(0, 60)
+        : null;
+
+  await env.DB.prepare('UPDATE users SET username = ?, display_name = ? WHERE id = ?')
+    .bind(username, displayName, user.id)
+    .run();
+
+  return json({ user: { id: user.id, email: user.email, username, displayName, role: user.role } });
+}
+
 // ---------------------------------------------------------------- router
 
 export async function handleApi(request, env, url) {
@@ -1494,6 +1643,9 @@ export async function handleApi(request, env, url) {
       if (seg[2] === 'login' && method === 'POST') return handleLogin(request, env);
       if (seg[2] === 'logout' && method === 'POST') return handleLogout(request, env);
       if (seg[2] === 'me' && method === 'GET') return handleMe(request, env);
+      if (seg[2] === 'profile' && (method === 'PUT' || method === 'PATCH')) {
+        return handleUpdateProfile(request, env);
+      }
       if (seg[2] === 'request-reset' && method === 'POST') return handleRequestReset(request, env);
       if (seg[2] === 'reset-password' && method === 'POST') return handleResetPassword(request, env);
     }

@@ -33,9 +33,11 @@ export const api = {
 
   // auth
   me: () => request('/auth/me'),
-  signup: (email, password) => request('/auth/signup', { method: 'POST', body: { email, password } }),
+  signup: (email, password, username) =>
+    request('/auth/signup', { method: 'POST', body: { email, password, username } }),
   login: (email, password) => request('/auth/login', { method: 'POST', body: { email, password } }),
   logout: () => request('/auth/logout', { method: 'POST' }),
+  updateProfile: (payload) => request('/auth/profile', { method: 'PUT', body: payload }),
 
   // catalog
   listTitles: (params = {}) => {
