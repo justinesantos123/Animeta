@@ -39,6 +39,48 @@ function readCookie(request, name) {
 // Throttle so an active session does not write on every single request.
 const LAST_SEEN_THROTTLE_MINUTES = 5;
 
+/** A visit counts as a "return" after this many days of absence. */
+const RETURN_AFTER_DAYS = 30;
+
+function utcDay() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Records today as an active day, and reports whether this visit follows a
+ * long gap. Called before last_seen_at is overwritten, while the previous
+ * value is still readable.
+ */
+async function touchActivity(env, userId, previousLastSeen) {
+  const day = utcDay();
+  const already = await env.DB.prepare(
+    'SELECT 1 AS x FROM user_activity_days WHERE user_id = ? AND day = ?',
+  )
+    .bind(userId, day)
+    .first();
+
+  if (!already) {
+    await env.DB.prepare('INSERT OR IGNORE INTO user_activity_days (user_id, day) VALUES (?, ?)').bind(
+      userId,
+      day,
+    ).run();
+  }
+
+  const gap = daysSince(previousLastSeen);
+  // Never-seen users are new signups, not returnees.
+  if (gap === null || gap < RETURN_AFTER_DAYS) return null;
+
+  // Already welcomed for this gap? Avoid re-notifying on every later request.
+  const prior = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND kind = ?',
+  )
+    .bind(userId, 'return_welcome')
+    .first();
+  if ((prior?.n ?? 0) > 0) return null;
+
+  return { gapDays: gap };
+}
+
 async function getUser(request, env) {
   const token = readCookie(request, COOKIE_NAME);
   if (!token) return null;
@@ -54,11 +96,10 @@ async function getUser(request, env) {
 
   // Any authenticated request counts as being present. This is what the
   // dashboard's active/offline figures are derived from.
+  const previous = row.last_seen_at;
   const stale =
-    !row.last_seen_at ||
-    Date.now() - new Date(row.last_seen_at.includes('T')
-      ? row.last_seen_at
-      : row.last_seen_at.replace(' ', 'T') + 'Z').getTime() >
+    !previous ||
+    Date.now() - new Date(previous.includes('T') ? previous : `${previous.replace(' ', 'T')}Z`).getTime() >
       LAST_SEEN_THROTTLE_MINUTES * 60 * 1000;
 
   if (stale) {
@@ -67,7 +108,45 @@ async function getUser(request, env) {
       .run();
   }
 
+  // Daily ledger + return detection, also throttled to once a day.
+  if (await isNewDayFor(env, row.id)) {
+    const returned = await touchActivity(env, row.id, previous);
+    if (returned && (await settingOn(env, 'auto_return_notifications'))) {
+      await notify(env, {
+        userIds: [row.id],
+        kind: 'return_welcome',
+        title: `Welcome back after ${returned.gapDays} days`,
+        body: 'We saved your place. Pick up where you left off.',
+        link: '/',
+        actor: 'Animeta',
+      });
+      await env.DB.prepare(
+        'INSERT INTO admin_action_log (id, admin_id, action, target_id, detail) VALUES (?, ?, ?, ?, ?)',
+      )
+        .bind(randomHex(16), row.id, 'user.returned', row.id, `${returned.gapDays}d`)
+        .run();
+    }
+  }
+
   return row;
+}
+
+/** True when the user has no ledger row for today. */
+async function isNewDayFor(env, userId) {
+  const row = await env.DB.prepare(
+    'SELECT 1 AS x FROM user_activity_days WHERE user_id = ? AND day = ?',
+  )
+    .bind(userId, utcDay())
+    .first();
+  return !row;
+}
+
+export async function settingOn(env, key, fallback = true) {
+  const row = await env.DB.prepare('SELECT value FROM app_settings WHERE key = ?')
+    .bind(key)
+    .first();
+  if (!row) return fallback;
+  return row.value === 'on' || row.value === 'true' || row.value === '1';
 }
 
 /** Days since an account was last seen. null means it has never been seen. */
@@ -1179,6 +1258,53 @@ async function handleDashboard(request, env) {
   const since7 = dayAgo(ACTIVE_DAYS);
   const since30 = dayAgo(IDLE_DAYS);
 
+    // Returns: a gap of RETURN_AFTER_DAYS or more between consecutive active
+    // days, with activity in the recent window.
+  const { results: activityRows } = await env.DB.prepare(
+    `SELECT user_id, day FROM user_activity_days
+     WHERE user_id IN (SELECT id FROM users)
+     ORDER BY user_id, day`,
+  ).all();
+
+  const byUser = new Map();
+  for (const row of activityRows) {
+    if (!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+    byUser.get(row.user_id).push(row.day);
+  }
+
+  const dayMs = 86400000;
+  const todayUtc = Date.now();
+  const returning = [];
+
+  for (const u of enriched) {
+    const days = byUser.get(u.id);
+    if (!days || days.length < 2) continue;
+
+    for (let i = days.length - 1; i > 0; i--) {
+      const prev = Date.parse(`${days[i - 1]}T00:00:00Z`);
+      const curr = Date.parse(`${days[i]}T00:00:00Z`);
+      if (Number.isNaN(prev) || Number.isNaN(curr)) continue;
+      const gap = Math.round((curr - prev) / dayMs);
+      if (gap < RETURN_AFTER_DAYS) continue;
+
+      // Only "current" returns: the reappearance must itself be recent.
+      const returnedMs = Date.parse(`${days[i]}T00:00:00Z`);
+      const daysSinceReturn = Math.floor((todayUtc - returnedMs) / dayMs);
+      if (daysSinceReturn > ACTIVE_DAYS) continue;
+
+      returning.push({
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        gapDays: gap,
+        returnedOn: days[i],
+        daysSinceReturn,
+      });
+      break; // most recent qualifying gap
+    }
+  }
+  returning.sort((a, b) => b.gapDays - a.gapDays);
+
   const library = await env.DB.prepare(
     `SELECT (SELECT COUNT(*) FROM titles) AS titles,
             (SELECT COUNT(*) FROM watchlist) AS watchlist,
@@ -1212,8 +1338,147 @@ async function handleDashboard(request, env) {
       .sort((a, b) => (b.daysOffline ?? 99999) - (a.daysOffline ?? 99999))
       .slice(0, 10),
     recentSignups: [...enriched].reverse().slice(0, 8),
-    thresholds: { activeDays: ACTIVE_DAYS, idleDays: IDLE_DAYS },
+    returning,
+    autoReturnNotifications: await settingOn(env, 'auto_return_notifications', true),
+    thresholds: { activeDays: ACTIVE_DAYS, idleDays: IDLE_DAYS, returnAfterDays: RETURN_AFTER_DAYS },
   });
+}
+
+/**
+ * Manual targeted notification. Staff pick specific accounts by id or email;
+ * duplicates are collapsed and unknown targets are reported back rather than
+ * silently dropped.
+ */
+async function handleSendNotification(request, env) {
+  const auth = await requireStaff(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const title = String(body.title ?? '').trim();
+  const text = String(body.body ?? '').trim();
+  const link = typeof body.link === 'string' ? body.link.slice(0, 200) : null;
+  const target = body.target || 'all'; // all | staff | users | ids
+
+  if (!title) return json({ error: 'A title is required' }, 400);
+  if (title.length > 140) return json({ error: 'Title is too long' }, 400);
+  if (!text) return json({ error: 'Write a message' }, 400);
+  if (text.length > 2000) return json({ error: 'Message is too long' }, 400);
+  if (link && !link.startsWith('/')) return json({ error: 'Link must be a path like /announcements' }, 400);
+
+  let targets = [];
+  if (target === 'ids') {
+    const raw = Array.isArray(body.userIds) ? body.userIds : [];
+    const emails = Array.isArray(body.emails) ? body.emails : [];
+    if (!raw.length && !emails.length) {
+      return json({ error: 'Pick at least one recipient' }, 400);
+    }
+
+    const conditions = [];
+    const binds = [];
+    for (const id of raw.map(String).slice(0, 500)) {
+      conditions.push('id = ?');
+      binds.push(id);
+    }
+    for (const em of emails.map((e) => String(e).trim().toLowerCase()).slice(0, 500)) {
+      conditions.push('email = ?');
+      binds.push(em);
+    }
+
+    const { results } = await env.DB.prepare(
+      `SELECT id, email FROM users WHERE ${conditions.join(' OR ')}`,
+    )
+      .bind(...binds)
+      .all();
+    targets = results;
+
+    const found = new Set(results.map((r) => r.email));
+    const missing = emails.map((e) => String(e).trim().toLowerCase()).filter((e) => !found.has(e));
+    if (missing.length) {
+      return json({ error: `No account for: ${missing.slice(0, 5).join(', ')}` }, 400);
+    }
+  } else if (target === 'staff') {
+    targets = await staffRows(env);
+  } else if (target === 'users') {
+    targets = await userRows(env, "role = 'user'");
+  } else {
+    targets = await userRows(env, '1=1');
+  }
+
+  if (!targets.length) return json({ error: 'That audience has no accounts' }, 400);
+
+  const count = await notify(env, {
+    userIds: targets.map((t) => t.id),
+    kind: 'direct',
+    title,
+    body: text,
+    link,
+    actor: auth.user.email,
+  });
+
+  await logAdminAction(
+    env,
+    auth.user.id,
+    'notification.send',
+    null,
+    `${target}:${count}`,
+  );
+
+  return json({
+    ok: true,
+    notified: count,
+    audience: target,
+    recipients: targets.slice(0, 50).map((t) => t.email),
+  });
+}
+
+async function staffRows(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, email FROM users WHERE role IN ('admin','moderator')",
+  ).all();
+  return results;
+}
+
+async function userRows(env, where) {
+  const { results } = await env.DB.prepare(`SELECT id, email FROM users WHERE ${where}`).all();
+  return results;
+}
+
+async function handleGetSettings(request, env) {
+  const auth = await requireStaff(request, env);
+  if (auth.error) return auth.error;
+  return json({
+    autoReturnNotifications: await settingOn(env, 'auto_return_notifications', true),
+    returnAfterDays: RETURN_AFTER_DAYS,
+  });
+}
+
+async function handleUpdateSettings(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  if (typeof body.autoReturnNotifications === 'boolean') {
+    await env.DB.prepare(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    )
+      .bind('auto_return_notifications', body.autoReturnNotifications ? 'on' : 'off')
+      .run();
+  }
+
+  return handleGetSettings(request, env);
 }
 
 // ---------------------------------------------------------------- router
@@ -1280,10 +1545,19 @@ export async function handleApi(request, env, url) {
       if (seg[2] === 'continue' && method === 'GET') return handleContinueWatching(request, env);
     }
 
+    if (seg[1] === 'settings') {
+      if (seg.length === 2 && method === 'GET') return handleGetSettings(request, env);
+      if (seg.length === 2 && method === 'PUT') return handleUpdateSettings(request, env);
+    }
+
     if (seg[1] === 'notifications') {
       if (seg.length === 2 && method === 'GET') return handleListNotifications(request, env);
       if (seg.length === 2 && method === 'POST') return handleMarkAllRead(request, env);
       if (seg.length === 3 && method === 'POST') return handleMarkRead(request, env, seg[2]);
+    }
+
+    if (seg[1] === 'admin' && seg[2] === 'send') {
+      if (seg.length === 3 && method === 'POST') return handleSendNotification(request, env);
     }
 
     if (seg[1] === 'announcements') {

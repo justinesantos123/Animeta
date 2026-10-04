@@ -147,3 +147,21 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications(user_id, read_at);
+
+-- One row per user per UTC day they were active. Lets us measure gaps between
+-- visits, which is what identifies someone returning after a long absence.
+-- A current-state column like last_seen_at cannot show a gap once it is gone.
+CREATE TABLE IF NOT EXISTS user_activity_days (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day     TEXT NOT NULL,
+  PRIMARY KEY (user_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_day ON user_activity_days(day);
+
+-- Small key/value store for admin-togglable behaviour.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

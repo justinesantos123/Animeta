@@ -66,6 +66,7 @@ for (const route of routes) {
     if (path === '/api/admin/dashboard') return json({});
     if (path === '/api/auth/me') return json({ user: null });
     if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
+    if (path === '/api/settings') return json({ autoReturnNotifications: true, returnAfterDays: 30 });
     return json({});
   };
 

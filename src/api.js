@@ -74,6 +74,13 @@ export const api = {
     request(`/announcements/${encodeURIComponent(id)}`, { method: 'PUT', body: payload }),
   deleteAnnouncement: (id) => request(`/announcements/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  // manual targeted notifications
+  sendNotification: (payload) => request('/admin/send', { method: 'POST', body: payload }),
+
+  // staff settings
+  getSettings: () => request('/settings'),
+  updateSettings: (payload) => request('/settings', { method: 'PUT', body: payload }),
+
   // notifications
   listNotifications: () => request('/notifications'),
   markNotificationRead: (id) =>

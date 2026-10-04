@@ -90,7 +90,7 @@ export default function AdminDashboard() {
 
   if (!data) return null;
 
-  const { counts, totals, mostActive, needsAttention, recentSignups, thresholds } = data;
+  const { counts, totals, mostActive, needsAttention, recentSignups, thresholds, returning } = data;
   const engaged = counts.active + counts.online;
 
   return (
@@ -154,6 +154,38 @@ export default function AdminDashboard() {
       </section>
 
       <div className="grid gap-6 lg:grid-cols-2">
+        {/* Coming back after a long absence */}
+        <section>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold">Back after a month</h2>
+            <p className="text-[11px] text-muted">
+              Returned after {thresholds.returnAfterDays}+ days away
+              {data.autoReturnNotifications ? ' · auto-welcome on' : ' · auto-welcome off'}
+            </p>
+          </div>
+          <ul className="mt-3 overflow-hidden rounded-xl bg-surface ring-1 ring-white/10">
+            {returning.length === 0 && (
+              <li className="px-4 py-6 text-center text-xs text-muted">
+                Nobody has come back from a long absence yet.
+              </li>
+            )}
+            {returning.map((u) => (
+              <li
+                key={u.id}
+                className="flex items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
+                <span className="rounded bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent">
+                  away {u.gapDays}d
+                </span>
+                <span className="w-24 shrink-0 text-right text-[11px] text-muted">
+                  back {timeAgo(`${u.returnedOn}T00:00:00Z`)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+
         {/* Most active */}
         <section>
           <h2 className="mb-3 text-sm font-semibold">Most recently active</h2>

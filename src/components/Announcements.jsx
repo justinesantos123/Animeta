@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { timeAgo } from '../utils/timeAgo';
+import NotificationComposer from './NotificationComposer';
 
 const INPUT =
   'w-full rounded-lg bg-surface px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
@@ -217,6 +218,58 @@ function PostCard({ a, onChanged }) {
   );
 }
 
+/** Admin-only switch for the automatic "welcome back" inbox message. */
+function AutoWelcomeToggle() {
+  const { user } = useAuth();
+  const [on, setOn] = useState(null);
+  const [days, setDays] = useState(30);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+    api
+      .getSettings()
+      .then((d) => {
+        setOn(d.autoReturnNotifications);
+        setDays(d.returnAfterDays);
+      })
+      .catch(() => setOn(null));
+  }, [user]);
+
+  if (user?.role !== 'admin' || on === null) return null;
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      const d = await api.updateSettings({ autoReturnNotifications: !on });
+      setOn(d.autoReturnNotifications);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-start gap-3 rounded-xl bg-surface p-4 ring-1 ring-white/10">
+      <input
+        id="auto-return"
+        type="checkbox"
+        checked={on}
+        disabled={busy}
+        onChange={toggle}
+        className="mt-0.5 accent-[#7B61FF]"
+      />
+      <label htmlFor="auto-return" className="text-xs leading-relaxed">
+        <span className="font-semibold">Automatic welcome-back</span>
+        <span className="mt-0.5 block text-muted">
+          When someone signs in after being away {days}+ days, send them an inbox notification
+          automatically. Set this from the Dashboard tab, or use the composer below to message
+          chosen people by hand.
+        </span>
+      </label>
+    </div>
+  );
+}
+
 /**
  * Staff announcement management. Posts can be created, edited and deleted:
  * authors manage their own, admins manage anyone's.
@@ -263,6 +316,8 @@ export function AnnouncementManager({ onChanged }) {
 
   return (
     <div className="space-y-5">
+      <AutoWelcomeToggle />
+      <NotificationComposer onSent={onChanged} />
       <AnnounceForm submitLabel="Post announcement" busy={busy} onSubmit={create} />
 
       {notice && (
