@@ -1,0 +1,10 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:04.000
+Sample subtitle track for Animeta.
+
+00:00:04.000 --> 00:00:09.000
+Replace this file with real timed subtitles per title.
+
+00:00:09.000 --> 00:00:14.000
+Captions are rendered from the WebVTT track on the player.
