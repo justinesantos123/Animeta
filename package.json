@@ -9,7 +9,8 @@
                     "preview":  "vite preview",
                     "check":  "node scripts/check-imports.mjs",
                     "smoke":  "node scripts/smoke.mjs",
-                    "seed":  "node scripts/generate-seed.mjs"
+                    "seed":  "node scripts/generate-seed.mjs",
+                    "test":  "node scripts/test-timeago.mjs \u0026\u0026 node scripts/smoke.mjs"
                 },
     "dependencies":  {
                          "hls.js":  "^1.5.20",

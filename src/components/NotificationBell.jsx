@@ -1,19 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useNotifications } from '../context/NotificationsContext';
+import { timeAgo } from '../utils/timeAgo';
 import { useAuth } from '../context/AuthContext';
-
-function timeAgo(iso) {
-  if (!iso) return '';
-  const then = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z').getTime();
-  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (secs < 60) return 'just now';
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
 
 export default function NotificationBell() {
   const { user } = useAuth();
@@ -103,8 +92,8 @@ export default function NotificationBell() {
                       {n.body && <p className="mt-0.5 line-clamp-2 text-xs text-muted">{n.body}</p>}
                       <p className="mt-1 text-[11px] text-muted">
                         {timeAgo(n.createdAt)}
-                        {n.actor && ` · ${n.actor}`}
-                        {n.kind === 'password_reset_request' && ' · needs a link'}
+                        {n.actor && ` Â· ${n.actor}`}
+                        {n.kind === 'password_reset_request' && ' Â· needs a link'}
                       </p>
                     </div>
                   </div>

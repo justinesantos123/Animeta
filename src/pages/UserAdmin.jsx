@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { DaysOffline, PresenceChip } from '../components/AdminDashboard';
+import { timeAgo } from '../utils/timeAgo';
 
 /**
  * Reveals a value exactly once with a copy button.
@@ -300,8 +301,8 @@ export default function UserAdmin({ canDelete = false }) {
                   {u.createdAt ? new Date(u.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString() : '—'}
                 </td>
                 <td className={`${cell} text-muted`}>{u.watchlistCount}</td>
-                <td className={`${cell} text-muted`}>
-                  {u.lastActive ? new Date(u.lastActive.replace(' ', 'T') + 'Z').toLocaleDateString() : 'never'}
+                <td className={cell}>
+                  <span className="text-muted">{timeAgo(u.lastSeenAt)}</span>
                 </td>
                 <td className={cell}>
                   <DaysOffline days={u.daysOffline} presence={u.presence} />

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import { timeAgo } from '../utils/timeAgo';
 
 const PRESENCE_ORDER = ['online', 'active', 'idle', 'offline', 'never'];
 
@@ -171,6 +172,7 @@ export default function AdminDashboard() {
                     owner
                   </span>
                 )}
+                <span className="text-[11px] text-muted">{timeAgo(u.lastSeenAt)}</span>
                 <DaysOffline days={u.daysOffline} presence={u.presence} />
               </li>
             ))}
@@ -193,6 +195,9 @@ export default function AdminDashboard() {
               >
                 <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
                 <PresenceChip presence={u.presence} daysOffline={u.daysOffline} />
+                <span className="w-16 shrink-0 text-right text-[11px] text-muted">
+                  {timeAgo(u.lastSeenAt)}
+                </span>
                 <DaysOffline days={u.daysOffline} presence={u.presence} />
               </li>
             ))}
@@ -221,9 +226,7 @@ export default function AdminDashboard() {
               >
                 {u.role}
               </span>
-              <span className="text-[11px] text-muted">
-                {u.createdAt ? u.createdAt.slice(0, 10) : ''}
-              </span>
+              <span className="text-[11px] text-muted">joined {timeAgo(u.createdAt)}</span>
             </li>
           ))}
         </ul>
