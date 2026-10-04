@@ -105,8 +105,7 @@ async function handleSignup(request, env) {
   const hash = await hashPassword(password, salt);
   // Admin is granted by OWNER_EMAIL or by an explicit promotion. Never by
   // registration order -- otherwise whoever signs up first becomes owner.
-  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
-  const role = owner && email === owner ? 'admin' : 'user';
+  const role = ownerEmails(env).includes(email) ? 'admin' : 'user';
 
   await env.DB.prepare(
     'INSERT INTO users (id, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?)',
@@ -227,11 +226,23 @@ async function requireAdmin(request, env) {
  * Owner-only tier. OWNER_EMAIL is a config var so promoting the owner does not
  * depend on who happened to register first.
  */
+function ownerEmails(env) {
+  return String(env.OWNER_EMAIL || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 async function requireOwner(request, env) {
   const auth = await requireAdmin(request, env);
   if (auth.error) return auth;
-  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
-  if (owner && auth.user.email.toLowerCase() !== owner) {
+  const owners = ownerEmails(env);
+  // With no OWNER_EMAIL configured the owner tier cannot be enforced, so refuse
+  // rather than silently letting any admin through.
+  if (owners.length === 0) {
+    return { error: json({ error: 'OWNER_EMAIL is not configured on this Worker' }, 500) };
+  }
+  if (!owners.includes(auth.user.email.toLowerCase())) {
     return { error: json({ error: 'Only the site owner can do this' }, 403) };
   }
   return auth;
@@ -563,7 +574,7 @@ async function handleListUsers(request, env) {
      ORDER BY u.created_at ASC`,
   ).all();
 
-  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  const owners = ownerEmails(env);
 
   // NOTE: password_hash and salt are deliberately never selected here.
   return json({
@@ -575,9 +586,12 @@ async function handleListUsers(request, env) {
       createdAt: u.created_at,
       watchlistCount: u.watchlist_count,
       lastActive: u.last_active,
-      isOwner: u.email.toLowerCase() === owner,
+      isOwner: owners.includes(u.email.toLowerCase()),
     })),
-    ownerEmail: owner || null,
+    // The frontend treats a truthy ownerEmail as "the signed-in user is the
+    // owner", so only report it when that is actually true.
+    ownerEmail: owners.includes(auth.user.email.toLowerCase()) ? auth.user.email : null,
+    ownerEmails: owners,
     mailConfigured: mailConfigured(env),
   });
 }
@@ -607,7 +621,7 @@ async function handleCreateUser(request, env) {
     return json({ error: 'Password must be at least 8 characters' }, 400);
   }
 
-  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  const owners = ownerEmails(env);
   const requestedRole = body.role === 'admin' ? 'admin' : 'user';
   // Only the owner may mint other admins.
   const isOwner = owner && auth.user.email.toLowerCase() === owner;
@@ -652,14 +666,14 @@ async function handleSetRole(request, env, targetId) {
     return json({ error: 'role must be admin or user' }, 400);
   }
 
-  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
+  const owners = ownerEmails(env);
   const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
     .bind(targetId)
     .first();
   if (!target) return json({ error: 'User not found' }, 404);
 
   // Guard against the owner locking themselves out of the admin tier.
-  if (owner && target.email.toLowerCase() === owner && role !== 'admin') {
+  if (owners.includes(target.email.toLowerCase()) && role !== 'admin') {
     return json({ error: 'The owner cannot be demoted' }, 400);
   }
 
@@ -713,8 +727,8 @@ async function handleDeleteUser(request, env, targetId) {
     .first();
   if (!target) return json({ error: 'User not found' }, 404);
 
-  const owner = String(env.OWNER_EMAIL || '').trim().toLowerCase();
-  if (owner && target.email.toLowerCase() === owner) {
+  const owners = ownerEmails(env);
+  if (owners.includes(target.email.toLowerCase())) {
     return json({ error: 'The owner cannot be deleted' }, 400);
   }
   if (target.id === auth.user.id) return json({ error: 'You cannot delete your own account' }, 400);

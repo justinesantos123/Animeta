@@ -23,8 +23,8 @@
   ],
   // Non-secret configuration. Change these when moving to a production domain.
   "vars": {
-    // Always resolves to the admin role. Change to your real owner email.
-    "OWNER_EMAIL": "justinezantoz01@gmail.com",
+    // Always resolves to the admin role. Comma-separated for multiple owners.
+    "OWNER_EMAIL": "justinezantoz01@gmail.com, personaljustine21@gmail.com",
     // Public base URL, used to build password-reset links.
     "APP_URL": "https://animeta.studykittools.com",
     // Sender identity for reset emails. Swap for your own domain's address later,
