@@ -493,6 +493,64 @@ async function handleContinueWatching(request, env) {
 
 const RESET_TTL_MINUTES = 60;
 
+/**
+ * Issues a reset token and returns the link.
+ *
+ * Only SHA-256(token) is stored. Any previous live token for the user is
+ * cleared first so only one link is ever valid.
+ */
+async function issueResetLink(env, user, request) {
+  const token = generateResetToken();
+  const tokenHash = await hashResetToken(token);
+  const expiresAt = new Date(Date.now() + RESET_TTL_MINUTES * 60 * 1000).toISOString();
+
+  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(user.id).run();
+  await env.DB.prepare(
+    'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+  )
+    .bind(randomHex(16), user.id, tokenHash, expiresAt)
+    .run();
+
+  const appUrl = String(env.APP_URL || new URL(request.url).origin).replace(/\/+$/, '');
+  const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
+
+  const mail = await sendPasswordResetEmail(env, {
+    to: user.email,
+    resetUrl,
+    expiresMinutes: RESET_TTL_MINUTES,
+  });
+
+  return { resetUrl, emailed: mail.sent, reason: mail.reason, expiresMinutes: RESET_TTL_MINUTES };
+}
+
+/**
+ * Admin generates a reset link for a user and hands it over directly.
+ *
+ * This is the path that keeps working with no mail provider configured, which
+ * is the situation while the site is on a test subdomain.
+ */
+async function handleAdminSendResetLink(request, env, targetId) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  const user = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+    .bind(targetId)
+    .first();
+  if (!user) return json({ error: 'User not found' }, 404);
+
+  const result = await issueResetLink(env, user, request);
+  await logAdminAction(env, auth.user.id, 'user.resetlink', user.id, user.email);
+
+  return json({
+    ok: true,
+    email: user.email,
+    resetUrl: result.resetUrl,
+    emailed: result.emailed,
+    deliveryReason: result.reason,
+    expiresMinutes: result.expiresMinutes,
+  });
+}
+
 async function handleListUsers(request, env) {
   const auth = await requireAdmin(request, env);
   if (auth.error) return auth.error;
@@ -694,33 +752,13 @@ async function handleRequestReset(request, env) {
   const user = await env.DB.prepare('SELECT id, email FROM users WHERE email = ?').bind(email).first();
   if (!user) return json(accepted);
 
-  const token = generateResetToken();
-  const tokenHash = await hashResetToken(token);
-  const expiresAt = new Date(Date.now() + RESET_TTL_MINUTES * 60 * 1000).toISOString();
-
-  // One live token per user keeps the table tidy.
-  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(user.id).run();
-  await env.DB.prepare(
-    'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)',
-  )
-    .bind(randomHex(16), user.id, tokenHash, expiresAt)
-    .run();
-
-  const appUrl = String(env.APP_URL || new URL(request.url).origin).replace(/\/+$/, '');
-  const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
-
-  const mail = await sendPasswordResetEmail(env, {
-    to: user.email,
-    resetUrl,
-    expiresMinutes: RESET_TTL_MINUTES,
-  });
+  const result = await issueResetLink(env, user, request);
 
   return json({
     ...accepted,
-    // Without a provider configured, hand the link back so the flow stays usable.
-    delivery: mail.sent ? 'email' : 'unavailable',
-    deliveryReason: mail.sent ? undefined : mail.reason,
-    ...(mail.sent ? {} : { resetUrl }),
+    delivery: result.emailed ? 'email' : 'unavailable',
+    deliveryReason: result.emailed ? undefined : result.reason,
+    ...(result.emailed ? {} : { resetUrl: result.resetUrl }),
   });
 }
 
@@ -800,6 +838,9 @@ export async function handleApi(request, env, url) {
       }
       if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'password' && method === 'POST') {
         return handleAdminResetPassword(request, env, seg[3]);
+      }
+      if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'reset-link' && method === 'POST') {
+        return handleAdminSendResetLink(request, env, seg[3]);
       }
       if (seg[2] === 'users' && seg.length === 4 && method === 'DELETE') {
         return handleDeleteUser(request, env, seg[3]);

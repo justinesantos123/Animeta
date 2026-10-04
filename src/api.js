@@ -61,6 +61,8 @@ export const api = {
     request(`/admin/users/${encodeURIComponent(id)}/role`, { method: 'POST', body: { role } }),
   resetUserPassword: (id) =>
     request(`/admin/users/${encodeURIComponent(id)}/password`, { method: 'POST' }),
+  sendUserResetLink: (id) =>
+    request(`/admin/users/${encodeURIComponent(id)}/reset-link`, { method: 'POST' }),
   deleteUser: (id) => request(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // self-service reset

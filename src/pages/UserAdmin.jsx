@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
  * freshly generated password at the moment it is reset. This component makes
  * that one-time nature explicit instead of implying it can be looked up later.
  */
-function OneTimeSecret({ secret, label, onDismiss }) {
+function OneTimeSecret({ secret, label, onDismiss, hint }) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -22,13 +22,24 @@ function OneTimeSecret({ secret, label, onDismiss }) {
     }
   }
 
+  const isUrl = secret.startsWith('http');
+
   return (
     <div className="rounded-xl bg-accent/10 p-4 ring-1 ring-accent/40">
       <p className="text-xs font-semibold text-accent">{label}</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <code className="select-all break-all rounded-lg bg-black/40 px-3 py-2 font-mono text-sm text-text">
-          {secret}
-        </code>
+        {isUrl ? (
+          <a
+            href={secret}
+            className="max-w-full break-all text-sm text-accent underline decoration-dotted hover:text-text"
+          >
+            {secret}
+          </a>
+        ) : (
+          <code className="select-all break-all rounded-lg bg-black/40 px-3 py-2 font-mono text-sm text-text">
+            {secret}
+          </code>
+        )}
         <button
           type="button"
           onClick={copy}
@@ -44,10 +55,7 @@ function OneTimeSecret({ secret, label, onDismiss }) {
           Dismiss
         </button>
       </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-muted">
-        Shown once and never stored in readable form. If you lose it, reset again — nobody can
-        retrieve it later.
-      </p>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted">{hint}</p>
     </div>
   );
 }
@@ -100,6 +108,21 @@ export default function UserAdmin() {
       setSecret({
         value: d.password,
         label: `New password for ${d.email}`,
+        hint: 'Shown once and never stored in readable form. If you lose it, reset again — nobody can retrieve it later.',
+      });
+    });
+
+  const onSendLink = (target) =>
+    withBusy(target.id, async () => {
+      const d = await api.sendUserResetLink(target.id);
+      setSecret({
+        value: d.resetUrl,
+        label: d.emailed
+          ? `Reset link emailed to ${d.email}`
+          : `Reset link for ${d.email}`,
+        hint: d.emailed
+          ? `They can set their own password from this link. It expires in ${d.expiresMinutes} minutes and works only once.`
+          : `Email is not sending yet (${d.deliveryReason}), so send them this link yourself. It expires in ${d.expiresMinutes} minutes and works only once.`,
       });
     });
 
@@ -163,6 +186,7 @@ export default function UserAdmin() {
         <OneTimeSecret
           secret={secret.value}
           label={secret.label}
+          hint={secret.hint}
           onDismiss={() => setSecret(null)}
         />
       )}
@@ -260,6 +284,15 @@ export default function UserAdmin() {
                       className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:brightness-125 disabled:opacity-50"
                     >
                       Reset password
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={busyId === u.id}
+                      onClick={() => onSendLink(u)}
+                      className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:brightness-125 disabled:opacity-50"
+                    >
+                      Send reset link
                     </button>
 
                     {/* Role changes and deletion are owner-only actions. */}
