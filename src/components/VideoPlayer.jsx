@@ -10,7 +10,7 @@ import Hls from 'hls.js';
  *   2. MSE + Hls.isSupported()   -> attach hls.js.
  *   3. Neither                    -> surface a real error instead of hanging.
  */
-export default function VideoPlayer({ src, poster, subtitlesUrl, title }) {
+export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgress }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const [status, setStatus] = useState('loading');
@@ -68,6 +68,18 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title }) {
     };
   }, [src]);
 
+  // Report playback position periodically for signed-in viewers.
+  useEffect(() => {
+    if (!onProgress) return undefined;
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    const id = setInterval(() => {
+      if (video.currentTime > 0) onProgress(video.currentTime);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [onProgress]);
+
   return (
     <div className="relative w-full overflow-hidden rounded-xl bg-black shadow-2xl ring-1 ring-white/10">
       <div className="aspect-video w-full">
@@ -81,13 +93,7 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title }) {
           aria-label={title ? `Video player for ${title}` : 'Video player'}
         >
           {subtitlesUrl && (
-            <track
-              kind="subtitles"
-              src={subtitlesUrl}
-              srcLang="en"
-              label="English"
-              default
-            />
+            <track kind="subtitles" src={subtitlesUrl} srcLang="en" label="English" default />
           )}
         </video>
       </div>

@@ -1,27 +1,32 @@
 import { useMemo, useState } from 'react';
-import { titles } from '../data/titles';
+import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
 
-const ALL_GENRES = ['All', ...new Set(titles.flatMap((t) => t.genres))];
-
 export default function Search() {
+  const { titles } = useCatalog();
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState('All');
   const [type, setType] = useState('all');
 
+  const ALL_GENRES = useMemo(
+    () => ['All', ...new Set(titles.flatMap((t) => t.genres || []))],
+    [titles],
+  );
+
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     return titles.filter((t) => {
+      const genres = t.genres || [];
       const matchesQuery =
         !q ||
         t.title.toLowerCase().includes(q) ||
-        t.synopsis.toLowerCase().includes(q) ||
-        t.genres.some((g) => g.toLowerCase().includes(q));
-      const matchesGenre = genre === 'All' || t.genres.includes(genre);
+        (t.synopsis || '').toLowerCase().includes(q) ||
+        genres.some((g) => g.toLowerCase().includes(q));
+      const matchesGenre = genre === 'All' || genres.includes(genre);
       const matchesType = type === 'all' || t.type === type;
       return matchesQuery && matchesGenre && matchesType;
     });
-  }, [query, genre, type]);
+  }, [titles, query, genre, type]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-8 pb-24 md:pb-16">
@@ -77,7 +82,7 @@ export default function Search() {
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           {results.map((t) => (
-            <TitleCard key={t.id} item={t} />
+            <TitleCard key={t.slug} item={t} />
           ))}
         </div>
       )}

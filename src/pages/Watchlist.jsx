@@ -1,22 +1,20 @@
 import { Link } from 'react-router-dom';
-import { titles } from '../data/titles';
+import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
-import { useWatchlist } from '../context/WatchlistContext';
 
 export default function Watchlist() {
-  const { ids } = useWatchlist();
-  const saved = titles.filter((t) => ids.includes(t.id));
+  const { savedTitles } = useCatalog();
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 pb-24 md:pb-16">
       <h1 className="text-2xl font-extrabold">My List</h1>
       <p className="mt-1 text-sm text-muted">
-        {saved.length === 0
+        {savedTitles.length === 0
           ? 'Nothing saved yet.'
-          : `${saved.length} ${saved.length === 1 ? 'title' : 'titles'} saved to this device.`}
+          : `${savedTitles.length} ${savedTitles.length === 1 ? 'title' : 'titles'} saved.`}
       </p>
 
-      {saved.length === 0 ? (
+      {savedTitles.length === 0 ? (
         <div className="mt-8 rounded-xl bg-surface p-12 text-center ring-1 ring-white/5">
           <p className="text-sm text-muted">Browse titles and add them to build your list.</p>
           <Link
@@ -28,8 +26,8 @@ export default function Watchlist() {
         </div>
       ) : (
         <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {saved.map((t) => (
-            <TitleCard key={t.id} item={t} />
+          {savedTitles.map((t) => (
+            <TitleCard key={t.slug} item={t} />
           ))}
         </div>
       )}

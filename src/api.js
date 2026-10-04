@@ -1,0 +1,67 @@
+// Thin API client. All network calls to the Worker live here so components
+// never touch fetch directly.
+
+const BASE = '/api';
+
+async function request(path, { method = 'GET', body, signal } = {}) {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    // Session cookie must ride along or the API will never see the user.
+    credentials: 'same-origin',
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    signal,
+  });
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const err = new Error(data?.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+export const api = {
+  health: () => request('/health'),
+
+  // auth
+  me: () => request('/auth/me'),
+  signup: (email, password) => request('/auth/signup', { method: 'POST', body: { email, password } }),
+  login: (email, password) => request('/auth/login', { method: 'POST', body: { email, password } }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+
+  // catalog
+  listTitles: (params = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return request(`/titles${q ? `?${q}` : ''}`);
+  },
+  getTitle: (slug) => request(`/titles/${encodeURIComponent(slug)}`),
+
+  // admin catalog CRUD
+  createTitle: (payload) => request('/titles', { method: 'POST', body: payload }),
+  updateTitle: (slug, payload) =>
+    request(`/titles/${encodeURIComponent(slug)}`, { method: 'PUT', body: payload }),
+  deleteTitle: (slug) => request(`/titles/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+
+  // watchlist
+  watchlist: () => request('/watchlist'),
+  addWatchlist: (slug) => request('/watchlist', { method: 'POST', body: { slug } }),
+  removeWatchlist: (slug) =>
+    request(`/watchlist/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+
+  // playback
+  startPlayback: (slug, position, device = 'web') =>
+    request('/playback/start', { method: 'POST', body: { slug, position, device } }),
+  continueWatching: () => request('/playback/continue'),
+};
