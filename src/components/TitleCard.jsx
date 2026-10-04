@@ -35,7 +35,7 @@ export default function TitleCard({ item }) {
 
       <div className="p-3">
         <h3 className="truncate text-sm font-semibold text-text">{item.title}</h3>
-        <p className="mt-0.5 truncate text-xs text-muted">{(item.genres || []).join(' Â· ')}</p>
+        <p className="mt-0.5 truncate text-xs text-muted">{(item.genres || []).join(' · ')}</p>
       </div>
     </Link>
   );

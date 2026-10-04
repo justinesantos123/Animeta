@@ -63,7 +63,7 @@ export default function Admin() {
   if (!ready || !user || !STAFF.includes(user.role)) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-24 text-center">
-        <p className="text-sm text-muted">Checking accessâ€¦</p>
+        <p className="text-sm text-muted">Checking access…</p>
       </div>
     );
   }
@@ -120,11 +120,11 @@ export default function Admin() {
     <div className="mx-auto max-w-4xl px-4 py-8 pb-24">
       <h1 className="text-2xl font-extrabold">Staff console</h1>
       <p className="mt-1 text-sm text-muted">
-        Signed in as {user.email} Â·{' '}
+        Signed in as {user.email} ·{' '}
         <span className={isAdmin ? 'text-accent' : 'text-muted'}>
           {isAdmin ? 'admin' : 'moderator'}
         </span>
-        {!isAdmin && ' Â· catalog editing and account deletion are owner/admin only'}
+        {!isAdmin && ' · catalog editing and account deletion are owner/admin only'}
       </p>
 
       <div className="mt-6 flex gap-1 border-b border-white/10" role="tablist">
@@ -311,7 +311,7 @@ export default function Admin() {
                 disabled={busy}
                 className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
               >
-                {busy ? 'Savingâ€¦' : editing ? 'Save changes' : 'Create title'}
+                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create title'}
               </button>
               {editing && (
                 <button

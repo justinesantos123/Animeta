@@ -92,8 +92,8 @@ export default function NotificationBell() {
                       {n.body && <p className="mt-0.5 line-clamp-2 text-xs text-muted">{n.body}</p>}
                       <p className="mt-1 text-[11px] text-muted">
                         {timeAgo(n.createdAt)}
-                        {n.actor && ` Â· ${n.actor}`}
-                        {n.kind === 'password_reset_request' && ' Â· needs a link'}
+                        {n.actor && ` · ${n.actor}`}
+                        {n.kind === 'password_reset_request' && ' · needs a link'}
                       </p>
                     </div>
                   </div>

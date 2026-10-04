@@ -14,7 +14,7 @@ export default function Home() {
       <div className="flex min-h-[60vh] items-center justify-center">
         <span className="flex items-center gap-3 text-sm text-muted">
           <span className="h-5 w-5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-          Loading catalogÃ¢â‚¬Â¦
+          Loading catalog…
         </span>
       </div>
     );
@@ -62,7 +62,7 @@ export default function Home() {
               <span className="font-semibold text-accent">{Number(featured.rating).toFixed(1)}</span>
               <span>{featured.releaseDate?.slice(0, 4)}</span>
               <span>{featured.runtime}</span>
-              <span>{featured.genres.join(' Ã‚Â· ')}</span>
+              <span>{featured.genres.join(' · ')}</span>
             </div>
             <div className="mt-6 flex flex-wrap gap-3">
               <Link

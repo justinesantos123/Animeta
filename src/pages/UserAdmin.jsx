@@ -4,6 +4,9 @@ import { useAuth } from '../context/AuthContext';
 import { DaysOffline, PresenceChip } from '../components/AdminDashboard';
 import { timeAgo } from '../utils/timeAgo';
 
+const INPUT =
+  'w-full rounded-lg bg-bg px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+
 /**
  * Reveals a value exactly once with a copy button.
  *
@@ -213,17 +216,17 @@ export default function UserAdmin({ canDelete = false }) {
             New user email
           </label>
           <input
-id="new-user-email"
-              type="email"
-              required
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              className={INPUT}
-            />
-            <p className="mt-1 text-[11px] text-muted">
-              Leave the username blank to derive one from the email address.
-            </p>
-          </div>
+            id="new-user-email"
+            type="email"
+            required
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            className={INPUT}
+          />
+          <p className="mt-1 text-[11px] text-muted">
+            Leave the username blank to derive one from the email address.
+          </p>
+        </div>
 
           <div>
             <label htmlFor="new-user-username" className="mb-1 block text-xs font-medium text-muted">

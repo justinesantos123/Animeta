@@ -15,6 +15,10 @@ export function preferredName(user) {
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
+  // Greeting for the next render after sign-in. Lives in state, not storage:
+  // a banner that polls sessionStorage on mount runs once at app start and
+  // misses the value login writes moments later.
+  const [greeting, setGreeting] = useState(null);
 
   // Restore the session on load so a refresh doesn't log you out.
   useEffect(() => {
@@ -38,25 +42,29 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (email, password) => {
     const d = await api.login(email, password);
     setUser(d.user);
-    // Consumed once by the shell to show the welcome-back greeting.
-    sessionStorage.setItem('animeta:justLoggedIn', JSON.stringify({ name: preferredName(d.user) }));
+    setGreeting({ name: preferredName(d.user) });
     return d.user;
   }, []);
 
   const signup = useCallback(async (email, password, username) => {
     const d = await api.signup(email, password, username);
     setUser(d.user);
-    sessionStorage.setItem('animeta:justLoggedIn', JSON.stringify({ name: preferredName(d.user), fresh: true }));
+    setGreeting({ name: preferredName(d.user), fresh: true });
     return d.user;
   }, []);
 
   const logout = useCallback(async () => {
-    sessionStorage.removeItem('animeta:justLoggedIn');
+    setGreeting(null);
     await api.logout().catch(() => {});
     setUser(null);
   }, []);
 
-  const value = useMemo(() => ({ user, ready, login, signup, logout }), [user, ready, login, signup, logout]);
+  const dismissGreeting = useCallback(() => setGreeting(null), []);
+
+  const value = useMemo(
+    () => ({ user, ready, login, signup, logout, greeting, dismissGreeting }),
+    [user, ready, login, signup, logout, greeting, dismissGreeting],
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

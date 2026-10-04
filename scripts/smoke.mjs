@@ -48,11 +48,14 @@ for (const route of routes) {
 
   // Route the mock by URL. A single catch-all body let pages render their
   // loading state forever, so runtime errors inside async loaders went unseen.
-  const json = (body, status = 200) =>
-    new window.Response(JSON.stringify(body), {
-      status,
-      headers: { 'content-type': 'application/json' },
-    });
+  // jsdom exposes no Response constructor. Returning `new window.Response(...)`
+  // threw inside the mock, and every page swallowed that into its
+  // signed-out/empty state, so these routes "passed" while rendering nothing.
+  const json = (body, status = 200) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  });
 
   window.fetch = async (input) => {
     const url = String(typeof input === 'string' ? input : input?.url || '');
@@ -63,7 +66,19 @@ for (const route of routes) {
     if (path === '/api/announcements') return json({ announcements: [] });
     if (path === '/api/announcements/staff') return json({ announcements: [] });
     if (path === '/api/admin/users') return json({ users: [], ownerEmail: null, mailConfigured: false });
-    if (path === '/api/admin/dashboard') return json({});
+    if (path === '/api/admin/dashboard') {
+      return json({
+        generatedAt: '2026-10-05 12:00:00',
+        counts: { total: 0, online: 0, active: 0, idle: 0, offline: 0, never: 0 },
+        totals: { watchlist: 0, episodes: 0, lastActiveDays: 0 },
+        mostActive: [],
+        needsAttention: [],
+        recentSignups: [],
+        returning: [],
+        autoReturnNotifications: true,
+        thresholds: { returnAfterDays: 30, notifyAfterDays: 14 },
+      });
+    }
     if (path === '/api/auth/me') return json({ user: null });
     if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
     if (path === '/api/settings') return json({ autoReturnNotifications: true, returnAfterDays: 30 });
