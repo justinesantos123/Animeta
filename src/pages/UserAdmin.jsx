@@ -65,9 +65,15 @@ function OneTimeSecret({ secret, label, onDismiss, hint }) {
   );
 }
 
-export default function UserAdmin({ canDelete = false }) {
+export default function UserAdmin({ canManage = false }) {
   const { user } = useAuth();
-  const [state, setState] = useState({ users: [], ownerEmail: null, mailConfigured: false });
+  const [state, setState] = useState({
+    users: [],
+    ownerEmail: null,
+    mailConfigured: false,
+    permissionCatalogue: [],
+    deleted: [],
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [secret, setSecret] = useState(null);
@@ -81,17 +87,26 @@ export default function UserAdmin({ canDelete = false }) {
   const isOwner =
     state.ownerEmail && user && user.email.toLowerCase() === state.ownerEmail.toLowerCase();
 
+  const role = user?.role;
+
   const load = useCallback(async () => {
     try {
       const d = await api.listUsers();
-      setState(d);
+      // Pending deletions are a separate endpoint, and only admins may read it,
+      // so a moderator with the "users" grant gets an empty list rather than an
+      // error taking down the whole page.
+      let deleted = [];
+      if (role === 'admin') {
+        deleted = (await api.listDeletedUsers().catch(() => ({ users: [] }))).users || [];
+      }
+      setState({ ...d, deleted });
       setError(null);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [role]);
 
   useEffect(() => {
     load();
@@ -139,9 +154,52 @@ export default function UserAdmin({ canDelete = false }) {
       await api.setUserRole(target.id, role);
     });
 
-  const onDelete = (target) => {
+  /**
+   * Replaces a moderator's permissions with the toggled set.
+   *
+   * The whole set is sent rather than one permission at a time, which is what
+   * the endpoint expects: it replaces the grants so they cannot drift from what
+   * the admin last saw checked.
+   */
+  const onTogglePermission = (target, permission, enabled) => {
+    const next = new Set(target.permissions || []);
+    if (enabled) next.add(permission);
+    else next.delete(permission);
+    return withBusy(target.id, async () => {
+      await api.setUserPermissions(target.id, [...next]);
+    });
+  };
+
+  const onRestore = (target) =>
+    withBusy(target.id, async () => {
+      await api.restoreUser(target.id);
+    });
+
+  const onPurge = (target) => {
     // eslint-disable-next-line no-alert
-    if (!window.confirm(`Delete ${target.email}? Their watchlist and history go too.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${target.email} permanently? This cannot be undone by anyone.`,
+      )
+    ) {
+      return;
+    }
+    withBusy(target.id, async () => {
+      await api.purgeUser(target.id);
+    });
+  };
+
+  const onDelete = (target) => {
+    // Deletion is recoverable for a week, which is why the copy says so rather
+    // than implying the account is already gone.
+    // eslint-disable-next-line no-alert
+    if (
+      !window.confirm(
+        `Delete ${target.email}? They can restore it by signing in within 7 days.`,
+      )
+    ) {
+      return;
+    }
     withBusy(target.id, async () => {
       await api.deleteUser(target.id);
     });
@@ -370,8 +428,7 @@ export default function UserAdmin({ canDelete = false }) {
                       Send reset link
                     </button>
 
-                    {/* Deletion: admins and the owner. Moderators cannot.
-                        Role changes: owner only. */}
+                    {/* Deletion and role changes are owner-only. */}
                     {isOwner && !u.isOwner && (
                       <button
                         type="button"
@@ -383,7 +440,7 @@ export default function UserAdmin({ canDelete = false }) {
                       </button>
                     )}
 
-                    {canDelete && !u.isOwner && u.id !== user?.id && (
+                    {isOwner && !u.isOwner && u.id !== user?.id && (
                       <button
                         type="button"
                         disabled={busyId === u.id}
@@ -394,6 +451,38 @@ export default function UserAdmin({ canDelete = false }) {
                       </button>
                     )}
                   </div>
+
+                  {/* Permission grants, on their own row so the toggles have
+                      room. Only moderators have grants to give: an admin holds
+                      everything implicitly and cannot be restricted. */}
+                  {u.role === 'moderator' && (
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+                      {state.permissionCatalogue.map((p) => {
+                        const checked = (u.permissions || []).includes(p.id);
+                        return (
+                          <label
+                            key={p.id}
+                            title={p.description}
+                            className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!isOwner || busyId === u.id}
+                              onChange={(e) => onTogglePermission(u, p.id, e.target.checked)}
+                              className="accent-[#7B61FF]"
+                            />
+                            {p.label}
+                          </label>
+                        );
+                      })}
+                      {u.permissions?.length > 0 && (
+                        <span className="text-[11px] text-faint">
+                          {u.permissions.join(', ')}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -402,9 +491,53 @@ export default function UserAdmin({ canDelete = false }) {
       </div>
 
       <p className="text-[11px] text-muted">
-        You are {isOwner ? 'the owner' : 'an admin'}. Only the owner can promote, demote or delete
-        accounts.
+        You are {isOwner ? 'the owner' : canManage ? 'a moderator with user access' : 'read-only'}.
+        Only the owner can promote, demote, grant permissions or delete accounts.
       </p>
+
+      {/* Accounts inside their recovery window. Kept separate from the main
+          table because these rows are inert: they cannot sign in, and the only
+          actions available are restoring or finishing the deletion. */}
+      {state.deleted.length > 0 && (
+        <div className="rounded-[var(--radius-card)] bg-surface p-4 ring-1 ring-[var(--color-danger)]/30">
+          <h3 className="text-sm font-semibold">Pending deletion</h3>
+          <p className="mt-1 text-[11px] text-muted">
+            These accounts are switched off but still restorable until their window closes. After
+            that they are deleted for good.
+          </p>
+          <ul className="mt-3 divide-y divide-white/5">
+            {state.deleted.map((d) => (
+              <li key={d.id} className="flex flex-wrap items-center gap-3 py-2 text-xs">
+                <span className="min-w-0 flex-1 truncate text-text">{d.email}</span>
+                <span className="text-muted">
+                  {d.deletedBy ? `removed by ${d.deletedBy}` : 'self-deleted'}
+                </span>
+                <span className={d.daysLeft > 0 ? 'text-muted' : 'text-[var(--color-danger)]'}>
+                  {d.daysLeft > 0 ? `${d.daysLeft}d left to restore` : 'window closed'}
+                </span>
+                {d.daysLeft > 0 && (
+                  <button
+                    type="button"
+                    disabled={busyId === d.id}
+                    onClick={() => onRestore(d)}
+                    className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
+                  >
+                    Restore
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={busyId === d.id}
+                  onClick={() => onPurge(d)}
+                  className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
+                >
+                  Delete now
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

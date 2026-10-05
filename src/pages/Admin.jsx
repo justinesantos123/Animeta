@@ -9,11 +9,19 @@ import { useNotifications } from '../context/NotificationsContext';
 
 const STAFF = ['admin', 'moderator'];
 
+/**
+ * Which permission each tab requires.
+ *
+ * Tabs are hidden rather than shown-then-refused, so a moderator sees the parts
+ * of the console they can actually use instead of four tabs that mostly 403.
+ * This is presentation only: every action is re-checked server-side, so
+ * widening the client gains nothing.
+ */
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard', staff: 'admin' },
-  { id: 'catalog', label: 'Catalog', staff: 'admin' },
-  { id: 'users', label: 'Users', staff: 'staff' },
-  { id: 'announcements', label: 'Announcements', staff: 'staff' },
+  { id: 'dashboard', label: 'Dashboard', permission: null, role: 'admin' },
+  { id: 'catalog', label: 'Catalog', permission: 'catalog' },
+  { id: 'users', label: 'Users', permission: 'users' },
+  { id: 'announcements', label: 'Announcements', permission: 'announcements' },
 ];
 
 /**
@@ -48,10 +56,25 @@ export default function Admin() {
   }
 
   const isAdmin = user.role === 'admin';
-  const visibleTabs = TABS.filter((t) => (t.staff === 'admin' ? isAdmin : true));
 
-  // A moderator demoted mid-session must not keep viewing the dashboard tab.
-  const activeTab = visibleTabs.some((t) => t.id === tab) ? tab : isAdmin ? 'dashboard' : 'users';
+  // Admins hold every permission implicitly; the server sends the resolved list
+  // so the two cannot disagree about who can do what.
+  const granted = new Set(user.permissions || []);
+
+  // Whether the viewer is the site owner. The server decides this from
+  // OWNER_EMAIL and reports it via /api/admin/users, so it is not something to
+  // infer from the role: a promoted admin is not the owner.
+  const visibleTabs = TABS.filter((t) => {
+    if (t.role === 'admin') return isAdmin;
+    return !t.permission || granted.has(t.permission);
+  });
+
+  // A moderator demoted or un-permissioned mid-session must not keep viewing the
+  // tab they were on, so fall back to whatever they can actually open.
+  const fallbackTab = visibleTabs.some((t) => t.id === 'dashboard')
+    ? 'dashboard'
+    : (visibleTabs[0]?.id ?? null);
+  const activeTab = visibleTabs.some((t) => t.id === tab) ? tab : fallbackTab;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 pb-24">
@@ -61,8 +84,17 @@ export default function Admin() {
         <span className={isAdmin ? 'text-accent' : 'text-muted'}>
           {isAdmin ? 'admin' : 'moderator'}
         </span>
-        {!isAdmin && ' · catalog editing and account deletion are owner/admin only'}
       </p>
+
+      {/* A moderator's reach is a grant list, so show it rather than implying
+          "moderator" means one fixed set of abilities. */}
+      {!isAdmin && (
+        <p className="mt-1 text-xs text-muted">
+          {granted.size
+            ? `You can: ${[...granted].join(', ')}.`
+            : 'You have no permissions yet. An admin can grant you some.'}
+        </p>
+      )}
 
       <div className="mt-6 flex gap-1 border-b border-[var(--color-line-strong)]" role="tablist">
         {visibleTabs.map((t) => (
@@ -93,7 +125,7 @@ export default function Admin() {
         </div>
       ) : activeTab === 'users' ? (
         <div className="mt-6">
-          <UserAdmin canDelete={isAdmin} />
+          <UserAdmin canManage={granted.has('users')} />
         </div>
       ) : (
         <div className="mt-6">

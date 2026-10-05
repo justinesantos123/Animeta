@@ -39,6 +39,12 @@ export const api = {
   logout: () => request('/auth/logout', { method: 'POST' }),
   updateProfile: (payload) => request('/auth/profile', { method: 'PUT', body: payload }),
 
+  // Self-service account deletion. Reclaimable for a week by signing in again.
+  deleteOwnAccount: (password) =>
+    request('/auth/delete-account', { method: 'POST', body: { password } }),
+  restoreOwnAccount: () => request('/auth/restore-account', { method: 'POST' }),
+  deletionStatus: () => request('/auth/deletion-status'),
+
   // catalog
   listTitles: (params = {}) => {
     const qs = new URLSearchParams();
@@ -74,6 +80,16 @@ export const api = {
   sendUserResetLink: (id) =>
     request(`/admin/users/${encodeURIComponent(id)}/reset-link`, { method: 'POST' }),
   deleteUser: (id) => request(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // Granting permissions, owner only. The full set is sent each time.
+  setUserPermissions: (id, permissions) =>
+    request(`/admin/users/${encodeURIComponent(id)}/permissions`, {
+      method: 'POST',
+      body: { permissions },
+    }),
+  listDeletedUsers: () => request('/admin/users/deleted'),
+  restoreUser: (id) =>
+    request(`/admin/users/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+  purgeUser: (id) => request(`/admin/users/${encodeURIComponent(id)}/purge`, { method: 'POST' }),
 
   // announcements
   listAnnouncements: () => request('/announcements'),

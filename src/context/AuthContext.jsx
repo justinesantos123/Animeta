@@ -42,7 +42,12 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (email, password) => {
     const d = await api.login(email, password);
     setUser(d.user);
-    setGreeting({ name: preferredName(d.user) });
+    // Signing in is also how a deleted account is restored, so the caller needs
+    // to be able to say so rather than just landing on the home page.
+    setGreeting({
+      name: preferredName(d.user),
+      restored: Boolean(d.restored),
+    });
     return d.user;
   }, []);
 
@@ -61,9 +66,22 @@ export function AuthProvider({ children }) {
 
   const dismissGreeting = useCallback(() => setGreeting(null), []);
 
+  /**
+   * Re-reads the session.
+   *
+   * Needed after anything that changes the account's own state, such as
+   * restoring a pending deletion: the cookie is unchanged by those calls, so
+   * nothing else would tell the app the user is signed in again.
+   */
+  const refresh = useCallback(async () => {
+    const d = await api.me().catch(() => ({ user: null }));
+    setUser(d.user);
+    return d.user;
+  }, []);
+
   const value = useMemo(
-    () => ({ user, ready, login, signup, logout, greeting, dismissGreeting }),
-    [user, ready, login, signup, logout, greeting, dismissGreeting],
+    () => ({ user, ready, login, signup, logout, greeting, dismissGreeting, refresh }),
+    [user, ready, login, signup, logout, greeting, dismissGreeting, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

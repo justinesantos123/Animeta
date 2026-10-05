@@ -17,6 +17,16 @@ import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES } from './access.js';
 import { lookupExternalId, fetchWatchProviders, normaliseRegion } from './tmdb.js';
+import {
+  PERMISSION_IDS,
+  RESTORE_WINDOW_DAYS,
+  PURGE_AFTER_DAYS,
+  loadPermissions,
+  restoreDaysLeft,
+  isRestorable,
+  isPurgeable,
+  sqlTimestamp,
+} from './permissions.js';
 import { searchArchive, resolveArchiveItem } from './archive.js';
 
 const JSON_HEADERS = {
@@ -92,11 +102,17 @@ async function getUser(request, env) {
   if (!payload?.sub) return null;
 
   const row = await env.DB.prepare(
-    'SELECT id, email, username, role, display_name, last_seen_at FROM users WHERE id = ?',
+    `SELECT id, email, username, role, display_name, last_seen_at, deleted_at, purge_after
+     FROM users WHERE id = ?`,
   )
     .bind(payload.sub)
     .first();
   if (!row) return null;
+
+  // A deleted account is not signed in, it merely still has a row. Refusing it
+  // here means every gated route rejects it at once, rather than each handler
+  // having to remember to check. The restore flow does not go through a session.
+  if (row.deleted_at) return null;
 
   // Any authenticated request counts as being present. This is what the
   // dashboard's active/offline figures are derived from.
@@ -265,8 +281,11 @@ async function deriveUsername(env, email) {
 
   for (let attempt = 0; attempt < 50; attempt++) {
     if (candidate.length < 3) candidate = `${candidate}user`;
+    // deleted_at IS NULL: a pending-deletion account still holds its username,
+    // and it will reclaim it if it is restored, so that handle must stay
+    // reserved while the window is open.
     const taken = await env.DB.prepare(
-      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND deleted_at IS NULL',
     )
       .bind(candidate)
       .first();
@@ -317,11 +336,33 @@ async function handleSignup(request, env) {
   const nameCheck = validateUsername(body.username);
   if (nameCheck.error) return json({ error: nameCheck.error }, 400);
 
-  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
-  if (existing) return json({ error: 'An account with that email already exists' }, 409);
+  const existing = await env.DB.prepare(
+    'SELECT id, deleted_at, purge_after FROM users WHERE email = ?',
+  )
+    .bind(email)
+    .first();
+
+  if (existing?.deleted_at) {
+    // The address is still held by the row, so a fresh signup would collide.
+    // Saying so plainly is better than a bare "already exists": the way out is
+    // to sign in and restore, not to try a different email.
+    if (isPurgeable(existing.deleted_at, existing.purge_after)) {
+      await purgeAccount(env, existing.id);
+    } else {
+      return json(
+        {
+          error:
+            'That email belongs to an account pending deletion. Sign in with it to restore the account instead of creating a new one.',
+        },
+        409,
+      );
+    }
+  } else if (existing) {
+    return json({ error: 'An account with that email already exists' }, 409);
+  }
 
   const nameTaken = await env.DB.prepare(
-    'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
+    'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND deleted_at IS NULL',
   )
     .bind(nameCheck.username)
     .first();
@@ -380,7 +421,9 @@ async function handleLogin(request, env) {
   const password = String(body.password ?? '');
 
   const row = await env.DB.prepare(
-    'SELECT id, email, username, display_name, password_hash, salt, role FROM users WHERE email = ?',
+    `SELECT id, email, username, display_name, password_hash, salt, role,
+            deleted_at, purge_after
+     FROM users WHERE email = ?`,
   )
     .bind(email)
     .first();
@@ -412,8 +455,43 @@ async function handleLogin(request, env) {
 
   if (!ok) return json({ error: 'Invalid email or password' }, 401);
 
-  // One typo should not cost the user their whole window.
+  // A deleted account is restored rather than refused, because the caller just
+  // proved they still hold the account's password. That is the same proof the
+  // deletion was made under, so it needs no emailed token.
+  //
+  // The purge runs first: past the window the row is destroyed, and this attempt
+  // must then look exactly like an unknown address rather than resurrecting it.
   await clearRateLimit(env, request, `login:acct:${emailKey}`);
+
+  if (row.deleted_at) {
+    if (isPurgeable(row.deleted_at, row.purge_after)) {
+      await purgeAccount(env, row.id);
+      return json({ error: 'Invalid email or password' }, 401);
+    }
+
+    await env.DB.prepare(
+      'UPDATE users SET deleted_at = NULL, purge_after = NULL, deleted_by = NULL WHERE id = ?',
+    )
+      .bind(row.id)
+      .run();
+    await logAdminAction(env, row.id, 'user.restore', row.id, 'self-restored on sign-in');
+
+    const restored = await signToken({ sub: row.id, role: row.role }, env.SESSION_SECRET);
+    return json(
+      {
+        restored: true,
+        user: {
+          id: row.id,
+          email: row.email,
+          username: row.username,
+          displayName: row.display_name,
+          role: row.role,
+        },
+      },
+      200,
+      { 'set-cookie': sessionCookie(restored) },
+    );
+  }
 
   const token = await signToken({ sub: row.id, role: row.role }, env.SESSION_SECRET);
   return json(
@@ -438,6 +516,9 @@ function handleLogout() {
 async function handleMe(request, env) {
   const user = await getUser(request, env);
   if (!user) return json({ user: null }, 200);
+
+  const permissions = await loadPermissions(env, user);
+
   return json({
     user: {
       id: user.id,
@@ -445,6 +526,10 @@ async function handleMe(request, env) {
       username: user.username,
       role: user.role,
       displayName: user.display_name,
+      // Sent to the client so the staff console can hide actions the viewer
+      // cannot perform. This is convenience only: every action is re-checked
+      // server-side, so a tampered client gains nothing.
+      permissions: [...permissions.set],
     },
   });
 }
@@ -553,7 +638,14 @@ async function handleGetTitle(request, env, url, slug) {
 
 const STAFF_ROLES = ['admin', 'moderator'];
 
-/** True when the signed-in account is staff (any tier below owner). */
+/**
+ * True when the signed-in account is staff (any tier below owner).
+ *
+ * Kept for the endpoints that genuinely belong to the staff console as a whole:
+ * the dashboards, the notification inbox, the listing of staff-only
+ * announcements. It does not authorise any particular action, because that is
+ * now a permission. Endpoints that change data use requirePermission instead.
+ */
 async function requireStaff(request, env) {
   const user = await getUser(request, env);
   if (!user) return { error: json({ error: 'Authentication required' }, 401) };
@@ -561,6 +653,35 @@ async function requireStaff(request, env) {
     return { error: json({ error: 'Staff access required' }, 403) };
   }
   return { user };
+}
+
+/**
+ * Staff gate for one specific permission.
+ *
+ * Replaces the plain role test on everything a moderator may do, so granting
+ * "catalog" lets a moderator edit titles without also letting them post
+ * announcements or reset passwords.
+ *
+ * The refusal names the missing permission: "staff access required" is not a
+ * useful answer to someone who was just promoted and is wondering why the
+ * button 403s.
+ */
+async function requirePermission(request, env, permission) {
+  const user = await getUser(request, env);
+  if (!user) return { error: json({ error: 'Authentication required' }, 401) };
+
+  const permissions = await loadPermissions(env, user);
+  if (!permissions.set.has(permission)) {
+    return {
+      error: json(
+        {
+          error: `You need the "${permission}" permission for this. An admin can grant it.`,
+        },
+        403,
+      ),
+    };
+  }
+  return { user, permissions };
 }
 
 async function requireAdmin(request, env) {
@@ -624,7 +745,7 @@ function normalizeGenres(input) {
 }
 
 async function handleCreateTitle(request, env) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   let body;
@@ -690,7 +811,7 @@ async function handleCreateTitle(request, env) {
 }
 
 async function handleUpdateTitle(request, env, slug) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   let body;
@@ -765,7 +886,7 @@ async function handleUpdateTitle(request, env, slug) {
 }
 
 async function handleDeleteTitle(request, env, slug) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   const existing = await env.DB.prepare('SELECT id FROM titles WHERE slug = ?').bind(slug).first();
@@ -926,7 +1047,7 @@ async function issueResetLink(env, user, request) {
  * is the situation while the site is on a test subdomain.
  */
 async function handleAdminSendResetLink(request, env, targetId) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'users');
   if (auth.error) return auth.error;
 
   const user = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
@@ -948,18 +1069,29 @@ async function handleAdminSendResetLink(request, env, targetId) {
 }
 
 async function handleListUsers(request, env) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'users');
   if (auth.error) return auth.error;
 
+  // Deleted accounts are excluded: this is the list of accounts that exist as
+  // far as the product is concerned. /api/admin/users/deleted is where pending
+  // deletions are reviewed.
   const { results } = await env.DB.prepare(
     `SELECT u.id, u.email, u.username, u.role, u.display_name, u.created_at, u.password_fingerprint, u.last_seen_at,
             (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.id) AS watchlist_count,
-            (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active
+            (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active,
+            (SELECT GROUP_CONCAT(p2.permission) FROM user_permissions p2 WHERE p2.user_id = u.id) AS granted
      FROM users u
+     WHERE u.deleted_at IS NULL
      ORDER BY u.created_at ASC`,
   ).all();
 
   const owners = ownerEmails(env);
+
+  // The permission catalogue, so the staff console renders the toggles from
+  // labels in the database instead of a list hardcoded in the client.
+  const { results: catalogue } = await env.DB.prepare(
+    'SELECT id, label, description FROM permissions ORDER BY sort_order, id',
+  ).all();
 
   // Reset history per user, so staff can see who last changed a credential and when.
   const history = {};
@@ -995,7 +1127,11 @@ async function handleListUsers(request, env) {
       // Non-reversible 8-char code. Identifies a credential without revealing it.
       passwordFingerprint: u.password_fingerprint,
       passwordHistory: (history[u.id] || []).slice(0, 5),
+      // Only moderators have meaningful grants; an admin implicitly holds all of
+      // them and reporting [] would wrongly read as "has none been granted".
+      permissions: u.role === 'moderator' ? (u.granted ? u.granted.split(',') : []) : [],
     })),
+    permissionCatalogue: catalogue,
     // The frontend treats a truthy ownerEmail as "the signed-in user is the
     // owner", so only report it when that is actually true.
     ownerEmail: owners.includes(auth.user.email.toLowerCase()) ? auth.user.email : null,
@@ -1026,7 +1162,7 @@ async function handleCreateUser(request, env) {
     const nameCheck = validateUsername(body.username);
     if (nameCheck.error) return json({ error: nameCheck.error }, 400);
     const taken = await env.DB.prepare(
-      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND deleted_at IS NULL',
     )
       .bind(nameCheck.username)
       .first();
@@ -1036,8 +1172,28 @@ async function handleCreateUser(request, env) {
     username = await deriveUsername(env, email);
   }
 
-  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
-  if (existing) return json({ error: 'An account with that email already exists' }, 409);
+  const existing = await env.DB.prepare(
+    'SELECT id, deleted_at, purge_after FROM users WHERE email = ?',
+  )
+    .bind(email)
+    .first();
+
+  if (existing?.deleted_at) {
+    // Destroy it once the window has closed, so the address becomes reusable
+    // rather than being held by a row nobody can ever sign into again.
+    if (!isPurgeable(existing.deleted_at, existing.purge_after)) {
+      return json(
+        {
+          error:
+            'That email belongs to an account pending deletion. Restore it first, or wait for the recovery window to close.',
+        },
+        409,
+      );
+    }
+    await purgeAccount(env, existing.id);
+  } else if (existing) {
+    return json({ error: 'An account with that email already exists' }, 409);
+  }
 
 // Generate a strong password unless the admin supplied one.
   const supplied = typeof body.password === 'string' && body.password.length > 0;
@@ -1118,9 +1274,74 @@ async function handleSetRole(request, env, targetId) {
   }
 
   await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(role, target.id).run();
+
+  // Moving off the moderator tier drops its grants with it, so a later
+  // re-promotion starts from nothing rather than silently restoring permissions
+  // that were granted weeks earlier.
+  if (role !== 'moderator') {
+    await env.DB.prepare('DELETE FROM user_permissions WHERE user_id = ?')
+      .bind(target.id)
+      .run();
+  }
+
   await logAdminAction(env, auth.user.id, `user.role.${role}`, target.id, target.email);
 
   return json({ ok: true, role });
+}
+
+/**
+ * Replaces a moderator's permissions wholesale.
+ *
+ * Admin only. Sending the full set each time rather than toggling individual
+ * rows, so the stored grants cannot drift from what the admin last saw.
+ */
+async function handleSetPermissions(request, env, targetId) {
+  const auth = await requireOwner(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const requested = Array.isArray(body.permissions) ? body.permissions : [];
+  const unknown = requested.filter((p) => !PERMISSION_IDS.includes(p));
+  if (unknown.length) {
+    return json({ error: `Unknown permission: ${unknown.join(', ')}` }, 400);
+  }
+
+  const target = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?')
+    .bind(targetId)
+    .first();
+  if (!target) return json({ error: 'User not found' }, 404);
+
+  // Admins hold every permission implicitly, so storing grants for them would
+  // suggest they are revocable when they are not.
+  if (target.role === 'admin') {
+    return json({ error: 'Admins already hold every permission' }, 400);
+  }
+
+  await env.DB.prepare('DELETE FROM user_permissions WHERE user_id = ?').bind(target.id).run();
+
+  for (const permission of requested) {
+    await env.DB.prepare(
+      'INSERT INTO user_permissions (user_id, permission, granted_by) VALUES (?, ?, ?)',
+    )
+      .bind(target.id, permission, auth.user.id)
+      .run();
+  }
+
+  await logAdminAction(
+    env,
+    auth.user.id,
+    'user.permissions',
+    target.id,
+    requested.length ? requested.join(',') : 'none',
+  );
+
+  return json({ ok: true, permissions: requested });
 }
 
 /**
@@ -1129,7 +1350,7 @@ async function handleSetRole(request, env, targetId) {
  * readable form, so it cannot be displayed again later.
  */
 async function handleAdminResetPassword(request, env, targetId) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'users');
   if (auth.error) return auth.error;
 
   const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
@@ -1159,12 +1380,249 @@ async function handleAdminResetPassword(request, env, targetId) {
   });
 }
 
-/** Owner only: delete an account. */
-async function handleDeleteUser(request, env, targetId) {
+/**
+ * Soft-deletes an account and starts its recovery window.
+ *
+ * The row survives, so the account is inert rather than gone: it cannot sign in,
+ * is skipped by every listing, and stays restorable until the window closes.
+ *
+ * Shared by the self-service and admin paths so the two cannot drift. Callers
+ * do their own authorisation checks first.
+ */
+async function softDeleteAccount(env, target, actorId) {
+  const now = Date.now();
+  const deletedAt = sqlTimestamp(now);
+  const purgeAfter = sqlTimestamp(now + PURGE_AFTER_DAYS * 86400000);
+
+  await env.DB.prepare(
+    'UPDATE users SET deleted_at = ?, purge_after = ?, deleted_by = ? WHERE id = ?',
+  )
+    .bind(deletedAt, purgeAfter, actorId ?? null, target.id)
+    .run();
+
+  // A link mailed before the deletion would otherwise still be redeemable while
+  // the account is meant to be gone.
+  await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?')
+    .bind(target.id)
+    .run();
+
+  await logAdminAction(
+    env,
+    actorId ?? target.id,
+    'user.delete',
+    target.id,
+    actorId ? `by staff, purge after ${purgeAfter}` : 'self-deleted',
+  );
+
+  return { daysLeft: restoreDaysLeft(deletedAt, purgeAfter, now) };
+}
+
+/**
+ * Destroys a deleted account for good.
+ *
+ * Everything hangs off users(id) with ON DELETE CASCADE, so this takes the
+ * watchlist, playback history, notifications, activity ledger and reset tokens
+ * with it. Titles are left alone: they belong to the catalog, not to the account
+ * that posted them.
+ */
+async function purgeAccount(env, userId) {
+  await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+  await logAdminAction(env, userId, 'user.purge', userId, 'recovery window expired');
+}
+
+/** A user deletes their own account. Password required. */
+async function handleDeleteOwnAccount(request, env) {
+  const token = readCookie(request, COOKIE_NAME);
+  if (!token) return json({ error: 'Authentication required' }, 401);
+  const payload = await verifyToken(token, env.SESSION_SECRET);
+  if (!payload?.sub) return json({ error: 'Authentication required' }, 401);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const row = await env.DB.prepare(
+    'SELECT id, email, salt, password_hash, deleted_at FROM users WHERE id = ?',
+  )
+    .bind(payload.sub)
+    .first();
+  if (!row || row.deleted_at) return json({ error: 'Authentication required' }, 401);
+
+  // Session theft alone must not be enough to destroy someone's history, so the
+  // account's own password is required to remove it.
+  const ok = await verifyPassword(
+    String(body.password ?? ''),
+    row.salt,
+    row.password_hash,
+  );
+  if (!ok) return json({ error: 'That password is not correct' }, 401);
+
+  const owners = ownerEmails(env);
+  if (owners.includes(row.email.toLowerCase())) {
+    return json(
+      { error: 'The owner account cannot be deleted here. Remove it from OWNER_EMAIL first.' },
+      400,
+    );
+  }
+
+  const { daysLeft } = await softDeleteAccount(env, row, null);
+
+  // The session cookie is deliberately left in place.
+  //
+  // getUser() refuses a deleted account, so the cookie authorises nothing: the
+  // account cannot browse, watch or read notifications. It is kept only because
+  // /api/auth/deletion-status and /api/auth/restore-account read the session
+  // directly, which is what lets the profile page show the countdown and the
+  // undo button. Clearing it here would make both unreachable and leave the
+  // user with no way to see how long they have.
+  //
+  // The token expires on its own schedule regardless, and a deleted account is
+  // rejected by every other route.
+  return json({
+    ok: true,
+    daysLeft,
+    restoreWindowDays: RESTORE_WINDOW_DAYS,
+    message: `Deleted. You have ${daysLeft} days to restore it.`,
+  });
+}
+
+/**
+ * Reports whether the account behind the current cookie is pending deletion.
+ *
+ * getUser refuses deleted accounts, so the profile page cannot ask it. This
+ * reads the session directly, which is what lets someone whose deletion was
+ * triggered elsewhere still see their countdown and undo it.
+ */
+async function handleDeletionStatus(request, env) {
+  const token = readCookie(request, COOKIE_NAME);
+  if (!token) return json({ pending: false });
+  const payload = await verifyToken(token, env.SESSION_SECRET);
+  if (!payload?.sub) return json({ pending: false });
+
+  const row = await env.DB.prepare(
+    'SELECT id, email, deleted_at, purge_after FROM users WHERE id = ?',
+  )
+    .bind(payload.sub)
+    .first();
+
+  if (!row?.deleted_at) return json({ pending: false });
+
+  const daysLeft = restoreDaysLeft(row.deleted_at, row.purge_after);
+  return json({
+    pending: true,
+    email: row.email,
+    deletedAt: row.deleted_at,
+    purgeAfter: row.purge_after,
+    daysLeft,
+    restoreWindowDays: RESTORE_WINDOW_DAYS,
+    restorable: daysLeft > 0,
+  });
+}
+
+/**
+ * Cancels a pending self-deletion from the profile page.
+ *
+ * Separate from restoring on sign-in, because the account may still hold a
+ * session elsewhere and an explicit undo is clearer than waiting for a sign-in.
+ */
+async function handleRestoreOwnAccount(request, env) {
+  const token = readCookie(request, COOKIE_NAME);
+  if (!token) return json({ error: 'Authentication required' }, 401);
+  const payload = await verifyToken(token, env.SESSION_SECRET);
+  if (!payload?.sub) return json({ error: 'Authentication required' }, 401);
+
+  const row = await env.DB.prepare(
+    'SELECT id, email, deleted_at, purge_after FROM users WHERE id = ?',
+  )
+    .bind(payload.sub)
+    .first();
+
+  // Same answer whether there was nothing to restore or the window had closed,
+  // so this cannot be used to probe which accounts existed.
+  if (!row?.deleted_at || !isRestorable(row.deleted_at, row.purge_after)) {
+    return json({ error: 'There is nothing to restore' }, 404);
+  }
+
+  await env.DB.prepare(
+    'UPDATE users SET deleted_at = NULL, purge_after = NULL, deleted_by = NULL WHERE id = ?',
+  )
+    .bind(row.id)
+    .run();
+  await logAdminAction(env, row.id, 'user.restore', row.id, 'self-restored');
+
+  return json({ ok: true });
+}
+
+/** Accounts awaiting deletion, so an admin can see what is pending. */
+async function handleListDeletedUsers(request, env) {
   const auth = await requireAdmin(request, env);
   if (auth.error) return auth.error;
 
-  const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+  const { results } = await env.DB.prepare(
+    `SELECT u.id, u.email, u.username, u.role, u.deleted_at, u.purge_after, u.deleted_by,
+            d.email AS deleted_by_email
+     FROM users u LEFT JOIN users d ON d.id = u.deleted_by
+     WHERE u.deleted_at IS NOT NULL
+     ORDER BY u.deleted_at DESC`,
+  ).all();
+
+  return json({
+    users: results.map((r) => ({
+      id: r.id,
+      email: r.email,
+      username: r.username,
+      role: r.role,
+      deletedAt: r.deleted_at,
+      purgeAfter: r.purge_after,
+      deletedBy: r.deleted_by_email ?? null,
+      daysLeft: restoreDaysLeft(r.deleted_at, r.purge_after),
+    })),
+  });
+}
+
+/** Admin restores a pending deletion, or purges it immediately. */
+async function handleAdminDeletedUser(request, env, targetId, action) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  const target = await env.DB.prepare(
+    'SELECT id, email, deleted_at, purge_after FROM users WHERE id = ?',
+  )
+    .bind(targetId)
+    .first();
+  if (!target?.deleted_at) return json({ error: 'That account is not pending deletion' }, 404);
+
+  if (action === 'purge') {
+    await purgeAccount(env, target.id);
+    return json({ ok: true, purged: true });
+  }
+
+  if (!isRestorable(target.deleted_at, target.purge_after)) {
+    return json(
+      { error: 'The recovery window has closed. This account has to be deleted permanently.' },
+      400,
+    );
+  }
+
+  await env.DB.prepare(
+    'UPDATE users SET deleted_at = NULL, purge_after = NULL, deleted_by = NULL WHERE id = ?',
+  )
+    .bind(target.id)
+    .run();
+  await logAdminAction(env, auth.user.id, 'user.restore', target.id, target.email);
+
+  return json({ ok: true, restored: true });
+}
+
+/** Owner only: delete another account, recoverable like a self-delete. */
+async function handleDeleteUser(request, env, targetId) {
+  const auth = await requireOwner(request, env);
+  if (auth.error) return auth.error;
+
+  const target = await env.DB.prepare('SELECT id, email, deleted_at FROM users WHERE id = ?')
     .bind(targetId)
     .first();
   if (!target) return json({ error: 'User not found' }, 404);
@@ -1175,10 +1633,21 @@ async function handleDeleteUser(request, env, targetId) {
   }
   if (target.id === auth.user.id) return json({ error: 'You cannot delete your own account' }, 400);
 
-  await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id).run();
-  await logAdminAction(env, auth.user.id, 'user.delete', target.id, target.email);
+  // Deleting an account that is already pending deletion means "make it
+  // permanent now", which is what an admin expects when they press it twice.
+  if (target.deleted_at) {
+    await purgeAccount(env, target.id);
+    return json({ ok: true, purged: true });
+  }
 
-  return json({ ok: true });
+  const { daysLeft } = await softDeleteAccount(env, target, auth.user.id);
+
+  return json({
+    ok: true,
+    daysLeft,
+    restoreWindowDays: RESTORE_WINDOW_DAYS,
+    message: `Deleted. Restorable for ${RESTORE_WINDOW_DAYS} days.`,
+  });
 }
 
 async function logAdminAction(env, adminId, action, targetId, detail) {
@@ -1219,8 +1688,19 @@ async function handleRequestReset(request, env) {
   // Always the same response so this cannot be used to discover accounts.
   const accepted = { ok: true, message: 'If that account exists, a reset link is on its way.' };
 
-  const user = await env.DB.prepare('SELECT id, email FROM users WHERE email = ?').bind(email).first();
-  if (!user) return json(accepted);
+  const user = await env.DB.prepare(
+    'SELECT id, email, deleted_at, purge_after FROM users WHERE email = ?',
+  )
+    .bind(email)
+    .first();
+  if (!user || user.deleted_at) return json(accepted);
+
+  // Past the recovery window the row is destroyed on sight, so a stale reset
+  // link cannot bring an account back after it should have been permanent.
+  if (isPurgeable(user.deleted_at, user.purge_after)) {
+    await purgeAccount(env, user.id);
+    return json(accepted);
+  }
 
   const result = await issueResetLink(env, user, request);
 
@@ -1303,14 +1783,18 @@ async function notify(env, { userIds, kind, title, body, link, actor }) {
 }
 
 async function staffIds(env) {
+  // deleted_at IS NULL everywhere a recipient list is built. Mailing somebody
+  // who has asked to leave, or who has had their account deleted by staff, is
+  // both a privacy problem and the fastest way to make someone who deleted their
+  // account come back angry.
   const { results } = await env.DB.prepare(
-    "SELECT id FROM users WHERE role IN ('admin','moderator')",
+    "SELECT id FROM users WHERE role IN ('admin','moderator') AND deleted_at IS NULL",
   ).all();
   return results.map((r) => r.id);
 }
 
 async function allUserIds(env) {
-  const { results } = await env.DB.prepare('SELECT id FROM users').all();
+  const { results } = await env.DB.prepare('SELECT id FROM users WHERE deleted_at IS NULL').all();
   return results.map((r) => r.id);
 }
 
@@ -1341,7 +1825,7 @@ async function handleListAnnouncements(request, env) {
 }
 
 async function handleCreateAnnouncement(request, env) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'announcements');
   if (auth.error) return auth.error;
 
   let body;
@@ -1395,7 +1879,7 @@ async function handleCreateAnnouncement(request, env) {
 
 /** Author or admin can edit. Mirrors the delete rule. */
 async function handleUpdateAnnouncement(request, env, id) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'announcements');
   if (auth.error) return auth.error;
 
   const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
@@ -1437,7 +1921,7 @@ async function handleUpdateAnnouncement(request, env, id) {
 }
 
 async function handleDeleteAnnouncement(request, env, id) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'announcements');
   if (auth.error) return auth.error;
 
   const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(id).first();
@@ -1530,7 +2014,8 @@ async function handleDashboard(request, env) {
   if (auth.error) return auth.error;
 
   const { results } = await env.DB.prepare(
-    'SELECT id, email, username, role, created_at, last_seen_at FROM users ORDER BY created_at ASC',
+    `SELECT id, email, username, role, created_at, last_seen_at, deleted_at
+     FROM users WHERE deleted_at IS NULL ORDER BY created_at ASC`,
   ).all();
 
   const counts = { total: 0, online: 0, active: 0, idle: 0, offline: 0, never: 0 };
@@ -1648,7 +2133,7 @@ async function handleDashboard(request, env) {
  * silently dropped.
  */
 async function handleSendNotification(request, env) {
-  const auth = await requireStaff(request, env);
+  const auth = await requirePermission(request, env, 'notifications');
   if (auth.error) return auth.error;
 
   let body;
@@ -1689,7 +2174,7 @@ async function handleSendNotification(request, env) {
     }
 
     const { results } = await env.DB.prepare(
-      `SELECT id, email FROM users WHERE ${conditions.join(' OR ')}`,
+      `SELECT id, email FROM users WHERE (${conditions.join(' OR ')}) AND deleted_at IS NULL`,
     )
       .bind(...binds)
       .all();
@@ -1737,13 +2222,17 @@ async function handleSendNotification(request, env) {
 
 async function staffRows(env) {
   const { results } = await env.DB.prepare(
-    "SELECT id, email FROM users WHERE role IN ('admin','moderator')",
+    "SELECT id, email FROM users WHERE role IN ('admin','moderator') AND deleted_at IS NULL",
   ).all();
   return results;
 }
 
 async function userRows(env, where) {
-  const { results } = await env.DB.prepare(`SELECT id, email FROM users WHERE ${where}`).all();
+  // The caller's predicate is combined with deleted_at IS NULL, so a deleted
+  // account can never be selected as a notification recipient.
+  const { results } = await env.DB.prepare(
+    `SELECT id, email FROM users WHERE (${where}) AND deleted_at IS NULL`,
+  ).all();
   return results;
 }
 
@@ -1796,7 +2285,7 @@ async function handleUpdateProfile(request, env) {
     const nameCheck = validateUsername(body.username);
     if (nameCheck.error) return json({ error: nameCheck.error }, 400);
     const taken = await env.DB.prepare(
-      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND id <> ?',
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND id <> ? AND deleted_at IS NULL',
     )
       .bind(nameCheck.username, user.id)
       .first();
@@ -1853,7 +2342,7 @@ function decoyHash() {
  * Admin only: it spends the TMDB quota, so it must not be open to any account.
  */
 async function handleTmdbLookup(request, env) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   let body;
@@ -1875,7 +2364,7 @@ async function handleTmdbLookup(request, env) {
  * stale. This lets staff refresh it without retyping the TMDB id.
  */
 async function handleTmdbProviders(request, env) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   let body;
@@ -1943,7 +2432,7 @@ async function handleTmdbProviders(request, env) {
  *   { identifier: "13-hours-by-air-1936" }
  */
 async function handleArchiveLookup(request, env) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   let body;
@@ -1968,7 +2457,7 @@ async function handleArchiveLookup(request, env) {
  * Every title, for the staff catalog list. Admin only.
  */
 async function handleListTitlesAdmin(request, env, url) {
-  const auth = await requireAdmin(request, env);
+  const auth = await requirePermission(request, env, 'catalog');
   if (auth.error) return auth.error;
 
   const type = url.searchParams.get('type');
@@ -2009,6 +2498,14 @@ export async function handleApi(request, env, url) {
       }
       if (seg[2] === 'request-reset' && method === 'POST') return handleRequestReset(request, env);
       if (seg[2] === 'reset-password' && method === 'POST') return handleResetPassword(request, env);
+      // Self-service account deletion, with the recovery window that makes it
+      // reversible. /restore exists because a pending-deletion account cannot be
+      // signed in, so the session cookie is the only thing left to act on.
+      if (seg[2] === 'delete-account' && method === 'POST') return handleDeleteOwnAccount(request, env);
+      if (seg[2] === 'restore-account' && method === 'POST') return handleRestoreOwnAccount(request, env);
+      // Lets the profile page show a pending deletion to whoever still holds the
+      // session, including after the account has been signed out elsewhere.
+      if (seg[2] === 'deletion-status' && method === 'GET') return handleDeletionStatus(request, env);
     }
 
     if (seg[1] === 'admin') {
@@ -2016,17 +2513,35 @@ export async function handleApi(request, env, url) {
         return handleDashboard(request, env);
       }
       // /api/admin/users                      GET  | POST
+      // /api/admin/users/deleted               GET
       // /api/admin/users/:id                   DELETE
       // /api/admin/users/:id/role              POST
+      // /api/admin/users/:id/permissions       POST
       // /api/admin/users/:id/password          POST
+      // /api/admin/users/:id/restore | purge   POST
       if (seg[2] === 'users' && seg.length === 3 && method === 'GET') {
         return handleListUsers(request, env);
       }
       if (seg[2] === 'users' && seg.length === 3 && method === 'POST') {
         return handleCreateUser(request, env);
       }
+      // Ordered ahead of the generic /:id routes below: 'deleted' is only a
+      // list name, and matching it as an id would 404.
+      if (seg[2] === 'users' && seg.length === 4 && seg[3] === 'deleted' && method === 'GET') {
+        return handleListDeletedUsers(request, env);
+      }
       if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'role' && method === 'POST') {
         return handleSetRole(request, env, seg[3]);
+      }
+      // Grants are owner-only, unlike the actions they authorise.
+      if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'permissions' && method === 'POST') {
+        return handleSetPermissions(request, env, seg[3]);
+      }
+      if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'restore' && method === 'POST') {
+        return handleAdminDeletedUser(request, env, seg[3], 'restore');
+      }
+      if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'purge' && method === 'POST') {
+        return handleAdminDeletedUser(request, env, seg[3], 'purge');
       }
       if (seg[2] === 'users' && seg.length === 5 && seg[4] === 'password' && method === 'POST') {
         return handleAdminResetPassword(request, env, seg[3]);

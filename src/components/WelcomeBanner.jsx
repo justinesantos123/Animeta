@@ -32,10 +32,19 @@ export default function WelcomeBanner() {
           {greeting.name.charAt(0).toUpperCase()}
         </span>
         <p className="min-w-0 flex-1 text-sm">
-          <span className="font-semibold">
-            {greeting.fresh ? 'Welcome to Animeta, ' : 'Welcome back, '}
-            {greeting.name}
-          </span>
+          {greeting.restored ? (
+            <>
+              <span className="font-semibold">Your account is back, {greeting.name}.</span>{' '}
+              <span className="text-muted">
+                Deletion was cancelled and your watchlist and history are intact.
+              </span>
+            </>
+          ) : (
+            <span className="font-semibold">
+              {greeting.fresh ? 'Welcome to Animeta, ' : 'Welcome back, '}
+              {greeting.name}
+            </span>
+          )}
         </p>
         <button
           type="button"

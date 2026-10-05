@@ -22,8 +22,17 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Soft delete with a recovery window. The row survives so the account stays
+-- restorable until purge_after; deleted_at being non-null is what makes it
+-- unusable. deleted_by is null for a self-delete, the staff id otherwise.
+-- Every read of an account that matters filters on deleted_at IS NULL.
+deleted_at   TEXT,
+purge_after  TEXT,
+deleted_by   TEXT,
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_users_deleted ON users(deleted_at);
 -- Case-insensitive uniqueness, which a plain UNIQUE on the column would not give.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(lower(username));
 
@@ -195,3 +204,40 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value      TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ---------------------------------------------------------------- permissions
+--
+-- Roles stay coarse because they decide which tabs the console offers.
+-- Permissions decide what a moderator may actually do, and are additive rows so
+-- granting one does not change anybody's role.
+--
+-- Ids are part of the API contract and must not be renamed once seeded. The
+-- catalogue matches PERMISSION_IDS in worker/permissions.js, which is the
+-- source of truth for the code.
+
+CREATE TABLE IF NOT EXISTS permissions (
+  id          TEXT PRIMARY KEY,
+  label       TEXT NOT NULL,
+  description TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS user_permissions (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+  granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  granted_by TEXT,
+  PRIMARY KEY (user_id, permission)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
+
+INSERT OR IGNORE INTO permissions (id, label, description, sort_order) VALUES
+  ('catalog', 'Manage the catalog',
+   'Add, edit and delete titles, and resolve their video sources.', 10),
+  ('announcements', 'Post announcements',
+   'Write announcements and edit or delete the ones they wrote.', 20),
+  ('notifications', 'Send notifications',
+   'Send a notification to individual users or to a whole group.', 30),
+  ('users', 'Manage users',
+   'View the user list and reset someone''s password.', 40);
