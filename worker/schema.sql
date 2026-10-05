@@ -276,4 +276,6 @@ INSERT OR IGNORE INTO permissions (id, label, description, sort_order) VALUES
   ('notifications', 'Send notifications',
    'Send a notification to individual users or to a whole group.', 30),
   ('users', 'Manage users',
-   'View the user list and reset someone''s password.', 40);
+   'View the user list and reset someone''s password.', 40),
+  ('upload', 'Upload video',
+   'Send a video file to the site and publish it to the catalog.', 50);

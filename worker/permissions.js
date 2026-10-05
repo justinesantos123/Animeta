@@ -20,6 +20,16 @@ export const PERMISSIONS = {
   ANNOUNCEMENTS: 'announcements',
   NOTIFICATIONS: 'notifications',
   USERS: 'users',
+  // Uploading is its own permission rather than part of `catalog`.
+  //
+  // A moderator who can add titles is not automatically someone who should be
+  // able to put a file on the server: uploading costs storage, bandwidth and
+  // moderation attention, and is the part most likely to be abused or used to
+  // publish something that should not be there. Splitting it means the admin
+  // decides who publishes, independently of who edits metadata.
+  //
+  // Admins hold it implicitly, as with everything else.
+  UPLOAD: 'upload',
 };
 
 export const PERMISSION_IDS = Object.values(PERMISSIONS);

@@ -65,8 +65,8 @@ export default function App() {
               <span className="text-text">META</span>
             </p>
             <p className="mt-2 max-w-md">
-              Early access build. Titles and artwork are placeholders; video plays from public HLS
-              test streams.
+              Early access build. The catalog is filled in by our admins and moderators, who upload
+              each video themselves.
             </p>
           </div>
         </footer>

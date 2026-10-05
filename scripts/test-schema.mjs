@@ -76,6 +76,18 @@ check(
   /upload_id\s+TEXT\s+REFERENCES uploads\(id\)\s+ON DELETE SET NULL/.test(schema),
 );
 
+// The upload permission is what keeps ordinary accounts off the upload path, so
+// it has to exist in the catalogue and in a migration, or the gate has nothing
+// to check against.
+check(
+  'schema.sql declares the upload permission',
+  /\('upload',\s*'Upload video'/.test(schema),
+);
+check(
+  'a migration seeds the upload permission',
+  migrations.some((f) => /'upload',\s*'Upload video'/.test(readFileSync(join(migrationsDir, f), 'utf8'))),
+);
+
 // An upload belongs to an account, and deleting the account must take its files'
 // metadata with it.
 check(

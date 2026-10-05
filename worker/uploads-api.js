@@ -71,6 +71,11 @@ function shapeUpload(row) {
  * The request body is the file. Metadata travels in query parameters, because a
  * multipart form would need the body parsed before it could be streamed to R2,
  * and that means buffering the whole video in memory.
+ *
+ * Gated on the `upload` permission rather than on being staff: a moderator can
+ * edit catalog metadata without being able to publish a file, and a regular
+ * account cannot reach this at all. The caller must have already checked that
+ * permission — see the router in api.js.
  */
 export async function handleCreateUpload(request, env, user) {
   const bucketError = requireBucket(env);

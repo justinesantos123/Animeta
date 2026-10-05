@@ -30,8 +30,10 @@ export default function Home() {
   if (isEmpty) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-24">
-        <h1 className="text-lg font-semibold">No titles yet</h1>
-        <p className="mt-1.5 text-sm text-muted">An admin can add titles from the staff console.</p>
+        <h1 className="text-lg font-semibold">Nothing published yet</h1>
+        <p className="mt-1.5 max-w-md text-sm text-muted">
+          Every title here is uploaded by our team. Nothing has been published so far.
+        </p>
       </div>
     );
   }

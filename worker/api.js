@@ -2744,8 +2744,15 @@ export async function handleApi(request, env, url) {
       return handleEmbedLookup(request, env);
     }
 
-    // Uploads. Every handler re-checks the owner, so a user can only ever touch
-    // their own files.
+    // Uploads.
+    //
+    // Creating an upload requires the `upload` permission, which only an admin
+    // holds implicitly and a moderator holds if the admin granted it. A regular
+    // account is refused here, so there is no route to it at all.
+    //
+    // Listing, finalising and deleting are not gated: they act only on the
+    // caller's own rows, which is what somebody tidying up after a failed
+    // upload needs, and a user with no uploads gets an empty list either way.
     if (seg[1] === 'uploads') {
       if (seg.length === 2 && method === 'GET') {
         const user = await getUser(request, env);
@@ -2753,9 +2760,9 @@ export async function handleApi(request, env, url) {
         return handleListMyUploads(request, env, user);
       }
       if (seg.length === 2 && method === 'POST') {
-        const user = await getUser(request, env);
-        if (!user) return json({ error: 'Authentication required' }, 401);
-        return handleCreateUpload(request, env, user);
+        const auth = await requirePermission(request, env, 'upload');
+        if (auth.error) return auth.error;
+        return handleCreateUpload(request, env, auth.user);
       }
       if (seg.length === 4 && seg[3] === 'finalise' && method === 'POST') {
         const user = await getUser(request, env);

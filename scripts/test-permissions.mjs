@@ -71,12 +71,34 @@ check(
 );
 
 // --- Permission catalogue ----------------------------------------------------
-check('the catalogue has four permissions', PERMISSION_IDS.length === 4, String(PERMISSION_IDS.length));
-for (const id of ['catalog', 'announcements', 'notifications', 'users']) {
+check('the catalogue has five permissions', PERMISSION_IDS.length === 5, String(PERMISSION_IDS.length));
+for (const id of ['catalog', 'announcements', 'notifications', 'users', 'upload']) {
   check(`catalogue contains ${id}`, PERMISSION_IDS.includes(id));
 }
 check('ids are unique', new Set(PERMISSION_IDS).size === PERMISSION_IDS.length);
-check('PERMISSIONS maps to the same set', Object.keys(PERMISSIONS).length === 4);
+check('PERMISSIONS maps to the same set', Object.keys(PERMISSIONS).length === 5);
+
+// --- Upload is its own permission, not part of the catalog --------------------
+// The whole point of splitting these: a moderator who can add titles must not
+// thereby gain the ability to put a file on the server.
+check('upload is separate from catalog', PERMISSIONS.UPLOAD !== PERMISSIONS.CATALOG);
+{
+  const p = resolvePermissions('moderator', ['catalog']);
+  check('catalog does not imply upload', p.set.has('catalog') && !p.set.has('upload'));
+}
+{
+  const p = resolvePermissions('moderator', ['upload']);
+  check('upload alone does not imply catalog', p.set.has('upload') && !p.set.has('catalog'));
+}
+{
+  const p = resolvePermissions('admin', []);
+  check('an admin holds upload implicitly', p.set.has('upload'));
+}
+{
+  // A regular account must never be able to upload, however it is asked.
+  const p = resolvePermissions('user', ['upload']);
+  check('a regular user cannot hold upload', p.set.size === 0 && !p.all);
+}
 
 // --- Admins hold everything, implicitly --------------------------------------
 {

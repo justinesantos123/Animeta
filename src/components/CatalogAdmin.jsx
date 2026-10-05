@@ -3,6 +3,7 @@ import { api } from '../api';
 import { TITLE_TYPES, titleTypeLabel } from '../lib/titleTypes';
 import EmbedPicker from './EmbedPicker';
 import VideoUploader from './VideoUploader';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * Catalog management: post a title, and see what is already posted.
@@ -37,6 +38,13 @@ const INPUT =
 const LABEL = 'mb-1 block text-xs font-medium text-[var(--color-muted)]';
 
 export default function CatalogAdmin() {
+  const { user } = useAuth();
+
+  // Uploading is a separate permission from editing the catalog, so the uploader
+  // is shown only to somebody who can actually use it. Hiding it is convenience:
+  // the endpoint re-checks, and a moderator without this grant would get a 403.
+  const canUpload =
+    user?.role === 'admin' || (user?.permissions || []).includes('upload');
   const [form, setForm] = useState(EMPTY);
   const [editing, setEditing] = useState(null);
 
@@ -201,21 +209,34 @@ const [upload, setUpload] = useState(null);
             AI anime and drama people make themselves; the other two are for work
             that already lives somewhere else. Exactly one of the three is used. */}
         <div className="mb-4 space-y-4">
-          <VideoUploader
-            onUploaded={async (up) => {
-              setUpload(up);
-              setEmbed(null);
-              setMessage({
-                ok: true,
-                text: `Uploaded ${up.filename}. Fill in the details, then save.`,
-              });
-              // Duration and dimensions would be read from the file in the browser
-              // before it is sent, not after: once the bytes are in R2 this machine
-              // has nothing left to read. They are display-only either way, and the
-              // upload is playable without them.
-            }}
-            disabled={Boolean(embed)}
-          />
+          {canUpload ? (
+            <VideoUploader
+              onUploaded={async (up) => {
+                setUpload(up);
+                setEmbed(null);
+                setMessage({
+                  ok: true,
+                  text: `Uploaded ${up.filename}. Fill in the details, then save.`,
+                });
+                // Duration and dimensions would be read from the file in the browser
+                // before it is sent, not after: once the bytes are in R2 this machine
+                // has nothing left to read. They are display-only either way, and the
+                // upload is playable without them.
+              }}
+              disabled={Boolean(embed)}
+            />
+          ) : (
+            // Said rather than omitted: an empty space where the uploader was
+            // looks like a bug, and the admin console should explain who can use
+            // it and who decides.
+            <div className="rounded-[var(--radius-card)] bg-[var(--color-surface)] p-4 ring-1 ring-[var(--color-line)]">
+              <p className="text-xs font-medium text-[var(--color-muted)]">Your own video</p>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-faint)]">
+                Uploading is limited to admins and moderators. Ask an admin for the
+                &ldquo;Upload video&rdquo; permission.
+              </p>
+            </div>
+          )}
 
           {upload && (
             <div className="flex items-center justify-between gap-3 rounded-[var(--radius-card)] bg-[var(--color-accent)]/10 px-4 py-3 ring-1 ring-[var(--color-accent)]/30">
