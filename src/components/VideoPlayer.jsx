@@ -6,10 +6,31 @@ import Hls from 'hls.js';
  *
  * Browsers split into three cases, and all three have to be handled or the
  * player fails silently on some browsers:
- *   1. Native HLS (Safari, iOS)  -> assign src directly, no JS needed.
- *   2. MSE + Hls.isSupported()   -> attach hls.js.
- *   3. Neither                    -> surface a real error instead of hanging.
+ *   1. Progressive file (.mp4, .webm) -> native playback, hls.js bypassed.
+ *   2. Native HLS (Safari, iOS)       -> assign src directly, no JS needed.
+ *   3. MSE + Hls.isSupported()        -> attach hls.js.
+ *   4. Neither                         -> surface a real error instead of hanging.
+ *
+ * No crossOrigin attribute: it forces a CORS media request, and hosts such as
+ * archive.org send no Access-Control-Allow-Origin, so the browser rejects the
+ * media with MEDIA_ERR_SRC_NOT_SUPPORTED even though the file plays fine
+ * without it. Nothing here reads pixels or audio, so it is not needed.
  */
+/**
+ * True for a progressive file the browser can play directly.
+ *
+ * hls.js exists to fetch and transmux playlists (.m3u8). Handing it a plain
+ * .mp4 makes it spin up an MSE pipeline that never completes, leaving the video
+ * stuck at readyState 0 with no error. Progressive files must bypass hls.js
+ * entirely and go straight to <video src>.
+ */
+function isProgressive(src) {
+  if (!src) return false;
+  let path = String(src).split(/[?#]/)[0].toLowerCase();
+  // Ignore a playlist extension on the path; an .mp4 extension is decisive.
+  return /\.(mp4|m4v|webm|mov|ogv|ogg)$/.test(path);
+}
+
 export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgress }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -23,40 +44,58 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgre
     setStatus('loading');
     setError(null);
 
-    const nativeHls = video.canPlayType('application/vnd.apple.mpegurl');
-
-    if (nativeHls) {
+    // Progressive file: the browser already knows how to play it. Safari plays
+    // HLS natively too, so both cases skip hls.js.
+    if (isProgressive(src) || video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src;
       setStatus('ready');
-    } else if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
-      hlsRef.current = hls;
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus('ready'));
+      const onLoaded = () => setStatus('ready');
+      const onError = () => {
+        setError('This video could not be loaded.');
+        setStatus('error');
+      };
+      video.addEventListener('loadedmetadata', onLoaded);
+      video.addEventListener('error', onError);
 
-      hls.on(Hls.Events.ERROR, (_evt, data) => {
-        if (!data.fatal) return;
-        switch (data.type) {
-          case Hls.ErrorTypes.NETWORK_ERROR:
-            hls.startLoad();
-            break;
-          case Hls.ErrorTypes.MEDIA_ERROR:
-            hls.recoverMediaError();
-            break;
-          default:
-            setError('This video could not be loaded.');
-            setStatus('error');
-            hls.destroy();
-            hlsRef.current = null;
-        }
-      });
-
-      hls.loadSource(src);
-      hls.attachMedia(video);
-    } else {
-      setError('Your browser cannot play HLS video.');
-      setStatus('error');
+      return () => {
+        video.removeEventListener('loadedmetadata', onLoaded);
+        video.removeEventListener('error', onError);
+        video.removeAttribute('src');
+        video.load();
+      };
     }
+
+    if (!Hls.isSupported()) {
+      setError('Your browser cannot play this stream.');
+      setStatus('error');
+      return undefined;
+    }
+
+    const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+    hlsRef.current = hls;
+
+    hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus('ready'));
+
+    hls.on(Hls.Events.ERROR, (_evt, data) => {
+      if (!data.fatal) return;
+      switch (data.type) {
+        case Hls.ErrorTypes.NETWORK_ERROR:
+          hls.startLoad();
+          break;
+        case Hls.ErrorTypes.MEDIA_ERROR:
+          hls.recoverMediaError();
+          break;
+        default:
+          setError('This video could not be loaded.');
+          setStatus('error');
+          hls.destroy();
+          hlsRef.current = null;
+      }
+    });
+
+    hls.loadSource(src);
+    hls.attachMedia(video);
 
     return () => {
       if (hlsRef.current) {
@@ -88,7 +127,6 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgre
           className="h-full w-full bg-black"
           controls
           playsInline
-          crossOrigin="anonymous"
           poster={poster}
           aria-label={title ? `Video player for ${title}` : 'Video player'}
         >

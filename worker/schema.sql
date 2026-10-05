@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS titles (
   poster_url    TEXT,
   backdrop_url  TEXT,
   video_url     TEXT,
+  -- Where the video came from: 'archive' for a public-domain file resolved
+  -- from the Internet Archive, NULL for a hand-pasted URL. Lets the UI label
+  -- provenance instead of implying one source.
+  video_source  TEXT,
   subtitles_url TEXT,
   featured      INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),

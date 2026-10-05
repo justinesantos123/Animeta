@@ -58,6 +58,8 @@ export const api = {
   listTitlesAdmin: () => request('/titles/staff'),
   // Resolves a TMDB or IMDb id to catalog metadata, server-side.
   tmdbLookup: (id) => request('/tmdb/lookup', { method: 'POST', body: { id } }),
+  // Demo catalog: playable public-domain films from the Internet Archive.
+  archiveLookup: (payload) => request('/archive/lookup', { method: 'POST', body: payload }),
 
   // admin user management
   dashboard: () => request('/admin/dashboard'),

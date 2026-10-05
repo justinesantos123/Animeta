@@ -1,0 +1,13 @@
+-- Record where a title's video came from.
+--
+-- The demo catalog resolves public-domain films from the Internet Archive,
+-- which is a different provenance from a hand-pasted stream URL and from a TMDB
+-- lookup that filled in metadata only. Recording it lets the UI label the
+-- source honestly instead of implying every title came from the same place.
+--
+-- Values: 'archive' (public-domain file resolved from the Internet Archive),
+--         NULL (a URL pasted by hand).
+--
+-- Not yet applied to production. Run:
+--   npx wrangler d1 migrations apply animeta --remote
+ALTER TABLE titles ADD COLUMN video_source TEXT;

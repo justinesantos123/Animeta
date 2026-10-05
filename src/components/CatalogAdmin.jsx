@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { TITLE_TYPES, titleTypeLabel } from '../lib/titleTypes';
+import ArchivePicker from './ArchivePicker';
 
 /**
  * Catalog management: post a title, and see what is already posted.
@@ -211,6 +212,18 @@ export default function CatalogAdmin() {
             </button>
           )}
         </div>
+
+        {!editing && (
+          <div className="mb-4">
+            <ArchivePicker
+              onError={(msg) => msg && setMessage({ ok: false, text: msg })}
+              onAdded={(t) => {
+                setMessage({ ok: true, text: `"${t.title}" added to Movies and is playable now.` });
+                load();
+              }}
+            />
+          </div>
+        )}
 
         {/* id lookup */}
         <div className="rounded-[var(--radius-card)] bg-[var(--color-surface)] p-4 ring-1 ring-[var(--color-line)]">
@@ -474,6 +487,14 @@ export default function CatalogAdmin() {
                       {t.episodeCount > 0 && (
                         <span className="tabular-nums text-xs text-[var(--color-faint)]">
                           {t.episodeCount} eps
+                        </span>
+                      )}
+                      {t.videoSource === 'archive' && (
+                        <span
+                          className="rounded-[3px] bg-[var(--color-accent)]/12 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-accent-strong)]"
+                          title="Playable file resolved from the Internet Archive"
+                        >
+                          Public domain
                         </span>
                       )}
                       {!t.videoUrl && (

@@ -17,6 +17,7 @@ import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES } from './access.js';
 import { lookupExternalId } from './tmdb.js';
+import { searchArchive, resolveArchiveItem } from './archive.js';
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -196,6 +197,7 @@ function shapeTitle(row) {
     posterUrl: row.poster_url,
     backdropUrl: row.backdrop_url,
     videoUrl: row.video_url,
+    videoSource: row.video_source ?? null,
     subtitlesUrl: row.subtitles_url,
     featured: Boolean(row.featured),
   };
@@ -623,8 +625,8 @@ async function handleCreateTitle(request, env) {
 
   await env.DB.prepare(
     `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
-       poster_url, backdrop_url, video_url, subtitles_url, featured)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       poster_url, backdrop_url, video_url, video_source, subtitles_url, featured)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -639,6 +641,7 @@ async function handleCreateTitle(request, env) {
       body.posterUrl ?? null,
       body.backdropUrl ?? null,
       body.videoUrl ?? null,
+      body.videoSource ?? null,
       body.subtitlesUrl ?? null,
       body.featured ? 1 : 0,
     )
@@ -680,6 +683,7 @@ async function handleUpdateTitle(request, env, slug) {
     poster_url: body.posterUrl ?? existing.poster_url,
     backdrop_url: body.backdropUrl ?? existing.backdrop_url,
     video_url: body.videoUrl ?? existing.video_url,
+    video_source: body.videoSource ?? existing.video_source,
     subtitles_url: body.subtitlesUrl ?? existing.subtitles_url,
     featured: body.featured === undefined ? existing.featured : body.featured ? 1 : 0,
     type: body.type ?? existing.type,
@@ -687,7 +691,7 @@ async function handleUpdateTitle(request, env, slug) {
 
   await env.DB.prepare(
     `UPDATE titles SET title=?, synopsis=?, genres=?, release_date=?, runtime=?, rating=?,
-       poster_url=?, backdrop_url=?, video_url=?, subtitles_url=?, featured=?, type=?,
+       poster_url=?, backdrop_url=?, video_url=?, video_source=?, subtitles_url=?, featured=?, type=?,
        updated_at=datetime('now')
      WHERE id=?`,
   )
@@ -701,6 +705,7 @@ async function handleUpdateTitle(request, env, slug) {
       next.poster_url,
       next.backdrop_url,
       next.video_url,
+      next.video_source,
       next.subtitles_url,
       next.featured,
       next.type,
@@ -1823,6 +1828,40 @@ async function handleTmdbLookup(request, env) {
 }
 
 /**
+ * Demo catalog: resolves a playable public-domain film.
+ *
+ * Backed by the Internet Archive, whose films are either public domain or carry
+ * an explicit Creative Commons licence, and whose files are free to serve. Only
+ * admin accounts can reach it, and the licence reported for each item is the
+ * item's own rights statement rather than an assumption.
+ *
+ * Accepts either a search phrase or a known identifier:
+ *   { q: "night of the living dead" }
+ *   { identifier: "13-hours-by-air-1936" }
+ */
+async function handleArchiveLookup(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  if (body.identifier) {
+    const result = await resolveArchiveItem(body.identifier);
+    if (result.error) return json({ error: result.error }, 404);
+    return json({ results: [result.item] });
+  }
+
+  const { error, results } = await searchArchive(body.q ?? '');
+  if (error) return json({ error }, 502);
+  return json({ results });
+}
+
+/**
  * Every title, for the staff catalog list. Admin only.
  */
 async function handleListTitlesAdmin(request, env, url) {
@@ -1912,6 +1951,10 @@ export async function handleApi(request, env, url) {
 
     if (seg[1] === 'tmdb' && seg[2] === 'lookup' && method === 'POST') {
       return handleTmdbLookup(request, env);
+    }
+
+    if (seg[1] === 'archive' && seg[2] === 'lookup' && method === 'POST') {
+      return handleArchiveLookup(request, env);
     }
 
     if (seg[1] === 'watchlist') {
