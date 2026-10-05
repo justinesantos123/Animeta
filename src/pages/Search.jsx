@@ -30,22 +30,22 @@ export default function Search() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-8 pb-24 md:pb-16">
-      <h1 className="text-2xl font-extrabold">Explore</h1>
+      <h1 className="text-2xl font-bold">Explore</h1>
 
       <div className="flex flex-col gap-3 sm:flex-row">
         <input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search titles, genres or synopsesâ€¦"
+          placeholder="Search titles, genres or synopses…"
           aria-label="Search titles"
-          className="flex-1 rounded-lg bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
+          className="flex-1 rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
         />
         <select
           value={type}
           onChange={(e) => setType(e.target.value)}
           aria-label="Filter by type"
-          className="rounded-lg bg-surface px-3 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-accent"
+          className="rounded-[var(--radius-control)] bg-surface px-3 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none focus:ring-2 focus:ring-accent"
         >
 <option value="all">All types</option>
           <option value="movie">Movies</option>
@@ -65,7 +65,7 @@ export default function Search() {
             className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
               genre === g
                 ? 'bg-accent text-white'
-                : 'bg-surface text-muted ring-1 ring-white/10 hover:text-text'
+                : 'bg-surface text-muted ring-1 ring-[var(--color-line-strong)] hover:text-text'
             }`}
           >
             {g}
@@ -78,7 +78,7 @@ export default function Search() {
       </p>
 
       {results.length === 0 ? (
-        <div className="rounded-xl bg-surface p-10 text-center ring-1 ring-white/5">
+        <div className="rounded-[var(--radius-card)] bg-surface p-10 text-center ring-1 ring-[var(--color-line)]">
           <p className="text-sm text-muted">Nothing matched those filters.</p>
         </div>
       ) : (

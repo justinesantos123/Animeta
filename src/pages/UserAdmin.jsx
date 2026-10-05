@@ -5,7 +5,7 @@ import { DaysOffline, PresenceChip } from '../components/AdminDashboard';
 import { timeAgo } from '../utils/timeAgo';
 
 const INPUT =
-  'w-full rounded-lg bg-bg px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+  'w-full rounded-[var(--radius-control)] bg-bg px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
 /**
  * Reveals a value exactly once with a copy button.
@@ -30,7 +30,7 @@ function OneTimeSecret({ secret, label, onDismiss, hint }) {
   const isUrl = secret.startsWith('http');
 
   return (
-    <div className="rounded-xl bg-accent/10 p-4 ring-1 ring-accent/40">
+    <div className="rounded-[var(--radius-card)] bg-accent/10 p-4 ring-1 ring-accent/40">
       <p className="text-xs font-semibold text-accent">{label}</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {isUrl ? (
@@ -41,21 +41,21 @@ function OneTimeSecret({ secret, label, onDismiss, hint }) {
             {secret}
           </a>
         ) : (
-          <code className="select-all break-all rounded-lg bg-black/40 px-3 py-2 font-mono text-sm text-text">
+          <code className="select-all break-all rounded-[var(--radius-control)] bg-black/40 px-3 py-2 font-mono text-sm text-text">
             {secret}
           </code>
         )}
         <button
           type="button"
           onClick={copy}
-          className="rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white transition hover:brightness-110"
+          className="rounded-[var(--radius-control)] bg-accent px-3 py-2 text-xs font-semibold text-white transition hover:bg-[var(--color-accent-strong)]"
         >
           {copied ? 'Copied' : 'Copy'}
         </button>
         <button
           type="button"
           onClick={onDismiss}
-          className="rounded-lg bg-surface px-3 py-2 text-xs font-semibold text-muted transition hover:text-text"
+          className="rounded-[var(--radius-control)] bg-surface px-3 py-2 text-xs font-semibold text-muted transition hover:text-text"
         >
           Dismiss
         </button>
@@ -116,7 +116,7 @@ export default function UserAdmin({ canDelete = false }) {
       setSecret({
         value: d.password,
         label: `New password for ${d.email}`,
-        hint: 'Shown once and never stored in readable form. If you lose it, reset again â€” nobody can retrieve it later.',
+        hint: 'Shown once and never stored in readable form. If you lose it, reset again — nobody can retrieve it later.',
       });
     });
 
@@ -173,7 +173,7 @@ export default function UserAdmin({ canDelete = false }) {
     return (
       <p className="flex items-center gap-3 py-8 text-sm text-muted">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-        Loading usersâ€¦
+        Loading users…
       </p>
     );
   }
@@ -188,7 +188,7 @@ export default function UserAdmin({ canDelete = false }) {
           Passwords are hashed and cannot be viewed. Reset one to hand a tester a working login.
         </p>
         {!state.mailConfigured && (
-          <p className="mt-2 rounded-lg bg-surface px-3 py-2 text-xs text-muted ring-1 ring-white/10">
+          <p className="mt-2 rounded-[var(--radius-control)] bg-surface px-3 py-2 text-xs text-muted ring-1 ring-[var(--color-line-strong)]">
             Email delivery is not configured, so reset links are shown here instead of being sent.
           </p>
         )}
@@ -204,13 +204,13 @@ export default function UserAdmin({ canDelete = false }) {
       )}
 
       {error && (
-        <p role="alert" className="rounded-lg bg-cta/15 px-3 py-2 text-xs text-cta ring-1 ring-cta/30">
+        <p role="alert" className="rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
           {error}
         </p>
       )}
 
       {/* Create account */}
-      <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3 rounded-xl bg-surface p-4 ring-1 ring-white/10">
+      <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3 rounded-[var(--radius-card)] bg-surface p-4 ring-1 ring-[var(--color-line-strong)]">
         <div className="min-w-56 flex-1">
           <label htmlFor="new-user-email" className="mb-1 block text-xs font-medium text-muted">
             New user email
@@ -251,7 +251,7 @@ export default function UserAdmin({ canDelete = false }) {
             id="new-user-role"
             value={newRole}
             onChange={(e) => setNewRole(e.target.value)}
-            className="rounded-lg bg-bg px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-accent"
+            className="rounded-[var(--radius-control)] bg-bg px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none focus:ring-2 focus:ring-accent"
           >
             <option value="user">User</option>
             <option value="moderator">Moderator</option>
@@ -261,9 +261,9 @@ export default function UserAdmin({ canDelete = false }) {
         <button
           type="submit"
           disabled={creating}
-          className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+          className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
         >
-          {creating ? 'Creatingâ€¦' : 'Create account'}
+          {creating ? 'Creating…' : 'Create account'}
         </button>
         {newRole === 'admin' && !isOwner && (
           <p className="w-full text-[11px] text-muted">
@@ -274,7 +274,7 @@ export default function UserAdmin({ canDelete = false }) {
 
       {/* Password identity. Never the password itself - a short non-reversible
           code so staff can tell whether a credential is the one in use. */}
-      <div className="rounded-xl bg-surface p-4 ring-1 ring-white/10">
+      <div className="rounded-[var(--radius-card)] bg-surface p-4 ring-1 ring-[var(--color-line-strong)]">
         <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-text">
           <input
             type="checkbox"
@@ -292,10 +292,10 @@ export default function UserAdmin({ canDelete = false }) {
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-xl ring-1 ring-white/10">
+      <div className="overflow-x-auto rounded-[var(--radius-card)] ring-1 ring-[var(--color-line-strong)]">
         <table className="w-full min-w-3xl border-collapse bg-surface">
           <thead>
-            <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-muted">
+            <tr className="border-b border-[var(--color-line-strong)] text-left text-xs uppercase tracking-wide text-muted">
               <th className={`${cell} font-medium`}>Username</th>
               <th className={`${cell} font-medium`}>Email</th>
               <th className={`${cell} font-medium`}>Role</th>
@@ -311,7 +311,7 @@ export default function UserAdmin({ canDelete = false }) {
             {state.users.map((u) => (
               <tr key={u.id}>
                 <td className={cell}>
-                  <span className="text-text">@{u.username || 'â€”'}</span>
+                  <span className="text-text">@{u.username || '—'}</span>
                 </td>
                 <td className={cell}>
                   <span className="text-text">{u.email}</span>
@@ -325,7 +325,7 @@ export default function UserAdmin({ canDelete = false }) {
                   <span className={u.role === 'admin' ? 'text-accent' : 'text-muted'}>{u.role}</span>
                 </td>
                 <td className={`${cell} text-muted`}>
-                  {u.createdAt ? new Date(u.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString() : 'â€”'}
+                  {u.createdAt ? new Date(u.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString() : '—'}
                 </td>
                 <td className={`${cell} text-muted`}>{u.watchlistCount}</td>
                 <td className={cell}>
@@ -340,11 +340,11 @@ export default function UserAdmin({ canDelete = false }) {
                 {showPasswords && (
                   <td className={cell}>
                     <code className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-xs text-accent">
-                      {u.passwordFingerprint || 'â€”'}
+                      {u.passwordFingerprint || '—'}
                     </code>
                     {u.passwordHistory?.length > 0 && (
                       <p className="mt-1 text-[10px] text-muted">
-                        {u.passwordHistory[0].action.replace('user.password.', '')} Â·{' '}
+                        {u.passwordHistory[0].action.replace('user.password.', '')} ·{' '}
                         {u.passwordHistory[0].at?.replace(' ', 'T').slice(0, 10)}
                       </p>
                     )}
@@ -356,7 +356,7 @@ export default function UserAdmin({ canDelete = false }) {
                       type="button"
                       disabled={busyId === u.id}
                       onClick={() => onReset(u)}
-                      className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:brightness-125 disabled:opacity-50"
+                      className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
                     >
                       Reset password
                     </button>
@@ -365,7 +365,7 @@ export default function UserAdmin({ canDelete = false }) {
                       type="button"
                       disabled={busyId === u.id}
                       onClick={() => onSendLink(u)}
-                      className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:brightness-125 disabled:opacity-50"
+                      className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
                     >
                       Send reset link
                     </button>
@@ -377,7 +377,7 @@ export default function UserAdmin({ canDelete = false }) {
                         type="button"
                         disabled={busyId === u.id}
                         onClick={() => onRole(u, nextRole(u.role))}
-                        className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:brightness-125 disabled:opacity-50"
+                        className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
                       >
                         {nextRole(u.role) === 'admin' ? 'Make admin' : 'Make moderator'}
                       </button>
@@ -388,7 +388,7 @@ export default function UserAdmin({ canDelete = false }) {
                         type="button"
                         disabled={busyId === u.id}
                         onClick={() => onDelete(u)}
-                        className="rounded-lg bg-surface-2 px-2.5 py-1 text-xs font-semibold text-cta transition hover:brightness-125 disabled:opacity-50"
+                        className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
                       >
                         Delete
                       </button>

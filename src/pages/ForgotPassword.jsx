@@ -31,21 +31,21 @@ export default function ForgotPassword() {
   }
 
   const input =
-    'w-full rounded-lg bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+    'w-full rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
   return (
     <div className="mx-auto max-w-md px-4 py-16 pb-24">
-      <div className="rounded-2xl bg-surface p-7 ring-1 ring-white/10">
-        <h1 className="text-xl font-extrabold">Reset your password</h1>
+      <div className="rounded-[var(--radius-card)] bg-surface p-7 ring-1 ring-[var(--color-line-strong)]">
+        <h1 className="text-xl font-bold">Reset your password</h1>
 
         {result ? (
           <div className="mt-4 space-y-4">
-            <p className="rounded-lg bg-accent/10 px-3 py-2.5 text-xs text-accent ring-1 ring-accent/30">
+            <p className="rounded-[var(--radius-control)] bg-accent/10 px-3 py-2.5 text-xs text-accent ring-1 ring-accent/30">
               {result.message}
             </p>
 
             {result.resetUrl && (
-              <div className="rounded-xl bg-bg p-4 ring-1 ring-white/10">
+              <div className="rounded-[var(--radius-card)] bg-bg p-4 ring-1 ring-[var(--color-line-strong)]">
                 <p className="text-xs font-semibold text-muted">
                   Email delivery is not configured, so here is the link directly:
                 </p>
@@ -60,7 +60,7 @@ export default function ForgotPassword() {
 
             <Link
               to="/auth"
-              className="inline-block rounded-lg bg-surface-2 px-4 py-2.5 text-sm font-semibold ring-1 ring-white/10"
+              className="inline-block rounded-[var(--radius-control)] bg-surface-2 px-4 py-2.5 text-sm font-semibold ring-1 ring-[var(--color-line-strong)]"
             >
               Back to sign in
             </Link>
@@ -87,7 +87,7 @@ export default function ForgotPassword() {
             </div>
 
             {error && (
-              <p role="alert" className="rounded-lg bg-cta/15 px-3 py-2 text-xs text-cta ring-1 ring-cta/30">
+              <p role="alert" className="rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
                 {error}
               </p>
             )}
@@ -95,7 +95,7 @@ export default function ForgotPassword() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-lg bg-cta px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+              className="w-full rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
             >
               {busy ? 'Sending…' : 'Send reset link'}
             </button>

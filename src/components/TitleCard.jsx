@@ -1,41 +1,60 @@
 import { Link } from 'react-router-dom';
 import { titleTypeLabel } from '../lib/titleTypes';
 
-export default function TitleCard({ item }) {
+/**
+ * Poster card. The most repeated element in the app, so the hover treatment and
+ * the title clamp live here rather than being re-decided per page.
+ *
+ * Metadata is deliberately kept to type and rating. Genre lines on every card
+ * made the grid read as a wall of text and pushed the titles out of alignment.
+ */
+export default function TitleCard({ item, priority = false }) {
   return (
     <Link
       to={`/title/${item.slug}`}
-      className="group relative block overflow-hidden rounded-xl bg-surface ring-1 ring-white/5 transition duration-200 hover:ring-accent/60 focus-visible:ring-2"
+      className="group relative flex flex-col rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line)] transition duration-200 hover:ring-[var(--color-line-strong)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
     >
-      <div className="relative aspect-2/3 overflow-hidden">
+      <div className="relative aspect-2/3 overflow-hidden rounded-t-[var(--radius-card)]">
         <img
           src={item.posterUrl}
           alt={`${item.title} poster`}
-          loading="lazy"
+          loading={priority ? 'eager' : 'lazy'}
           decoding="async"
-          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+          className="h-full w-full object-cover"
         />
 
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100 max-sm:opacity-100">
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-cta/90 shadow-lg shadow-cta/30">
-            <svg viewBox="0 0 24 24" className="ml-0.5 h-5 w-5 fill-white" aria-hidden="true">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </span>
-        </div>
+        {/* Darken only on hover, so the resting grid stays clean. */}
+        <div className="absolute inset-0 bg-black/0 transition-colors duration-200 group-hover:bg-black/45" />
 
-        <span className="absolute left-2 top-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-semibold text-accent">
+        <span className="absolute left-2 top-2 rounded-[3px] bg-black/80 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-[var(--color-text)]">
           {Number(item.rating).toFixed(1)}
         </span>
 
-        <span className="absolute right-2 top-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+        <span className="absolute right-2 top-2 rounded-[3px] bg-black/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-muted)]">
           {titleTypeLabel(item.type)}
+        </span>
+
+        {/* Hover only. On touch there is no hover state, and showing it on every
+            card at once buried the posters under a wall of play buttons. The
+            card itself is the tap target. */}
+        <span
+          className="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100"
+          aria-hidden="true"
+        >
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-black shadow-lg">
+            <svg viewBox="0 0 24 24" className="ml-0.5 h-4 w-4 fill-current">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </span>
         </span>
       </div>
 
-      <div className="p-3">
-        <h3 className="truncate text-sm font-semibold text-text">{item.title}</h3>
-        <p className="mt-0.5 truncate text-xs text-muted">{(item.genres || []).join(' · ')}</p>
+      {/* Fixed height so titles of one and two lines keep the grid even. */}
+      <div className="flex min-h-[3.25rem] flex-col gap-0.5 p-2.5">
+        <h3 className="line-clamp-2 text-[13px] font-medium leading-snug text-[var(--color-text)]">
+          {item.title}
+        </h3>
+        <p className="truncate text-[11px] text-[var(--color-faint)]">{item.releaseDate?.slice(0, 4)}</p>
       </div>
     </Link>
   );

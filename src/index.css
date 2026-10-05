@@ -1,21 +1,46 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-bg: #0d0d0f;
-  --color-surface: #16161a;
-  --color-surface-2: #1f1f25;
-  --color-accent: #7b61ff;
-  --color-cta: #ff3b3b;
-  --color-text: #e8e8ef;
-  --color-muted: #8a8a99;
+  /* Surfaces, darkest to lightest. Kept close together so elevation reads as a
+     shift in the same hue rather than a jump between greys. */
+  --color-bg: #0b0b0e;
+  --color-surface: #131318;
+  --color-surface-2: #1c1c23;
+  --color-surface-3: #26262f;
+
+  /* One accent, used for interactive affordances and focus. Previously there
+     were two competing colours (purple + a red CTA) with no system. */
+  --color-accent: #8b7cf6;
+  --color-accent-strong: #a596ff;
+
+  /* Destructive and error only. Never a primary action colour. */
+  --color-danger: #f2555a;
+
+  --color-text: #edeef2;
+  --color-muted: #9a9aa8;
+  --color-faint: #6e6e7d;
+
+  /* Hairlines. Two weights: structural borders and barely-there separators. */
+  --color-line: #26262f;
+  --color-line-strong: #35353f;
 
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+
+  /* A small set of radii. One off-scale value per component is what makes a
+     layout look assembled rather than designed. */
+  --radius-card: 0.625rem;
+  --radius-control: 0.5rem;
+
+  /* Vertical rhythm for page sections. */
+  --spacing-section: 4.5rem;
 }
 
 @layer base {
   html {
     background-color: var(--color-bg);
     color-scheme: dark;
+    /* Anchor links and scrollIntoView should not tuck under the sticky header. */
+    scroll-padding-top: 5rem;
   }
 
   body {
@@ -24,22 +49,112 @@
     color: var(--color-text);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* Tabular figures keep rating and episode columns aligned. */
+    font-variant-numeric: tabular-nums;
   }
 
-  /* Visible keyboard focus everywhere, per WCAG AA intent. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    /* Optical margin trimming so headings sit tight against their content. */
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
   :focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+    border-radius: 2px;
   }
 
-  /* Respect users who ask for less motion. */
+  ::selection {
+    background: var(--color-accent);
+    color: #fff;
+  }
+
+  /* Media always fills its frame. This kills the layout shift that would
+     otherwise happen as posters load. */
+  img {
+    display: block;
+    max-width: 100%;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
       animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
     }
+  }
+}
+
+@layer components {
+  /* Section heading used by Home, Browse and Category. One definition so the
+     spacing and type scale stay identical across pages. */
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .section-head__title {
+    font-size: 1.0625rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .section-head__meta {
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+  }
+
+  /* Primary action. Filled, square-ish, used at most once per view. */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.125rem;
+    border-radius: var(--radius-control);
+    background: var(--color-accent);
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 600;
+    transition: background-color 150ms ease;
+  }
+
+  .btn-primary:hover {
+    background: var(--color-accent-strong);
+  }
+
+  /* Secondary action. Outline only, so the hierarchy is unambiguous. */
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.125rem;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-line-strong);
+    background: transparent;
+    color: var(--color-text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .btn-secondary:hover {
+    background: var(--color-surface-2);
+    border-color: var(--color-faint);
   }
 }
 
@@ -51,8 +166,28 @@
     display: none;
   }
 
-  /* Respect WCAG AA: keep muted text legible against the dark background. */
+  /* Multi-line clamp. Titles and synopsises should truncate predictably
+     instead of pushing a grid row taller than its neighbours. */
+  .clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
   .text-muted {
     color: var(--color-muted);
+  }
+
+  /* Hairline that sits on the page background rather than inside a card. */
+  .rule {
+    border-top: 1px solid var(--color-line);
   }
 }

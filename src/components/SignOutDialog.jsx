@@ -48,7 +48,7 @@ export default function SignOutDialog({ open, onCancel }) {
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="signout-title"
-        className="relative w-full max-w-sm rounded-2xl bg-surface p-6 shadow-2xl ring-1 ring-white/10"
+        className="relative w-full max-w-sm rounded-[var(--radius-card)] bg-surface p-6 shadow-2xl ring-1 ring-[var(--color-line-strong)]"
       >
         <h2 id="signout-title" className="text-base font-bold">
           {TITLE}
@@ -64,7 +64,7 @@ export default function SignOutDialog({ open, onCancel }) {
             ref={cancelRef}
             type="button"
             onClick={onCancel}
-            className="rounded-lg bg-surface-2 px-4 py-2 text-sm font-semibold ring-1 ring-white/10 transition hover:brightness-125"
+            className="rounded-[var(--radius-control)] bg-surface-2 px-4 py-2 text-sm font-semibold ring-1 ring-[var(--color-line-strong)] transition hover:bg-[var(--color-surface-3)]"
           >
             Stay signed in
           </button>
@@ -72,7 +72,7 @@ export default function SignOutDialog({ open, onCancel }) {
             ref={confirmRef}
             type="button"
             onClick={onConfirm}
-            className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110"
+            className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)]"
           >
             Sign out
           </button>

@@ -8,7 +8,7 @@ const PRESENCE = {
   online: { label: 'Online now', dot: 'bg-emerald-400', chip: 'bg-emerald-500/15 text-emerald-300' },
   active: { label: 'Active', dot: 'bg-accent', chip: 'bg-accent/15 text-accent' },
   idle: { label: 'Idle', dot: 'bg-amber-400', chip: 'bg-amber-500/15 text-amber-300' },
-  offline: { label: 'Offline', dot: 'bg-cta', chip: 'bg-cta/15 text-cta' },
+  offline: { label: 'Offline', dot: 'bg-[var(--color-accent)]', chip: 'bg-[var(--color-danger)]/12 text-[var(--color-danger)]' },
   never: { label: 'Never signed in', dot: 'bg-white/30', chip: 'bg-white/10 text-muted' },
 };
 
@@ -30,7 +30,7 @@ export function DaysOffline({ days, presence }) {
     return <span className="text-muted">never</span>;
   }
   if (days === 0) return <span className="text-emerald-300">today</span>;
-  return <span className={days > 30 ? 'text-cta' : days > 7 ? 'text-amber-300' : ''}>{days}d</span>;
+  return <span className={days > 30 ? 'text-[var(--color-danger)]' : days > 7 ? 'text-amber-300' : ''}>{days}d</span>;
 }
 
 function StatCard({ label, value, tone = 'default', sub }) {
@@ -40,12 +40,12 @@ function StatCard({ label, value, tone = 'default', sub }) {
       : tone === 'warn'
         ? 'text-amber-300'
         : tone === 'bad'
-          ? 'text-cta'
+          ? 'text-[var(--color-danger)]'
           : 'text-text';
   return (
-    <div className="rounded-xl bg-surface p-4 ring-1 ring-white/10">
+    <div className="rounded-[var(--radius-card)] bg-surface p-4 ring-1 ring-[var(--color-line-strong)]">
       <p className="text-[11px] font-medium uppercase tracking-wide text-muted">{label}</p>
-      <p className={`mt-1 text-2xl font-extrabold ${toneClass}`}>{value}</p>
+      <p className={`mt-1 text-2xl font-bold ${toneClass}`}>{value}</p>
       {sub && <p className="mt-0.5 text-[11px] text-muted">{sub}</p>}
     </div>
   );
@@ -77,14 +77,14 @@ export default function AdminDashboard() {
     return (
       <p className="flex items-center gap-3 py-8 text-sm text-muted">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-        Loading activityâ€¦
+        Loading activity…
       </p>
     );
   }
 
   if (error) {
     return (
-      <p role="alert" className="rounded-lg bg-cta/15 px-3 py-2 text-xs text-cta ring-1 ring-cta/30">
+      <p role="alert" className="rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
         {error}
       </p>
     );
@@ -102,8 +102,8 @@ export default function AdminDashboard() {
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="text-sm font-semibold">Presence</h2>
           <p className="text-[11px] text-muted">
-            Active = seen within {thresholds.activeDays}d Â· Idle = {thresholds.activeDays}â€“
-            {thresholds.idleDays}d Â· Offline = over {thresholds.idleDays}d
+            Active = seen within {thresholds.activeDays}d · Idle = {thresholds.activeDays}–
+            {thresholds.idleDays}d · Offline = over {thresholds.idleDays}d
           </p>
         </div>
 
@@ -118,7 +118,7 @@ export default function AdminDashboard() {
 
         {/* Share bar */}
         {counts.total > 0 && (
-          <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-surface ring-1 ring-white/10">
+          <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-surface ring-1 ring-[var(--color-line-strong)]">
             {PRESENCE_ORDER.map((k) =>
               counts[k] > 0 ? (
                 <div
@@ -162,10 +162,10 @@ export default function AdminDashboard() {
             <h2 className="text-sm font-semibold">Back after a month</h2>
             <p className="text-[11px] text-muted">
               Returned after {thresholds.returnAfterDays}+ days away
-              {data.autoReturnNotifications ? ' Â· auto-welcome on' : ' Â· auto-welcome off'}
+              {data.autoReturnNotifications ? ' · auto-welcome on' : ' · auto-welcome off'}
             </p>
           </div>
-          <ul className="mt-3 overflow-hidden rounded-xl bg-surface ring-1 ring-white/10">
+          <ul className="mt-3 overflow-hidden rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]">
             {returning.length === 0 && (
               <li className="px-4 py-6 text-center text-xs text-muted">
                 Nobody has come back from a long absence yet.
@@ -174,7 +174,7 @@ export default function AdminDashboard() {
             {returning.map((u) => (
               <li
                 key={u.id}
-                className="flex items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0"
+                className="flex items-center gap-3 border-b border-[var(--color-line)] px-4 py-2.5 last:border-0"
               >
                 <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
                 <span className="rounded bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent">
@@ -191,14 +191,14 @@ export default function AdminDashboard() {
         {/* Most active */}
         <section>
           <h2 className="mb-3 text-sm font-semibold">Most recently active</h2>
-          <ul className="overflow-hidden rounded-xl bg-surface ring-1 ring-white/10">
+          <ul className="overflow-hidden rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]">
             {mostActive.length === 0 && (
               <li className="px-4 py-6 text-center text-xs text-muted">No activity recorded yet.</li>
             )}
             {mostActive.map((u) => (
               <li
                 key={u.id}
-                className="flex items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0"
+                className="flex items-center gap-3 border-b border-[var(--color-line)] px-4 py-2.5 last:border-0"
               >
                 <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
                 {u.isOwner && (
@@ -216,7 +216,7 @@ export default function AdminDashboard() {
         {/* Needs attention */}
         <section>
           <h2 className="mb-3 text-sm font-semibold">Gone quiet</h2>
-          <ul className="overflow-hidden rounded-xl bg-surface ring-1 ring-white/10">
+          <ul className="overflow-hidden rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]">
             {needsAttention.length === 0 && (
               <li className="px-4 py-6 text-center text-xs text-muted">
                 Everyone is active. Nothing to chase.
@@ -225,7 +225,7 @@ export default function AdminDashboard() {
             {needsAttention.map((u) => (
               <li
                 key={u.id}
-                className="flex items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0"
+                className="flex items-center gap-3 border-b border-[var(--color-line)] px-4 py-2.5 last:border-0"
               >
                 <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
                 <PresenceChip presence={u.presence} />
@@ -242,11 +242,11 @@ export default function AdminDashboard() {
       {/* Recent signups */}
       <section>
         <h2 className="mb-3 text-sm font-semibold">Newest accounts</h2>
-        <ul className="overflow-hidden rounded-xl bg-surface ring-1 ring-white/10">
+        <ul className="overflow-hidden rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]">
           {recentSignups.map((u) => (
             <li
               key={u.id}
-              className="flex items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0"
+              className="flex items-center gap-3 border-b border-[var(--color-line)] px-4 py-2.5 last:border-0"
             >
               <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
               <span

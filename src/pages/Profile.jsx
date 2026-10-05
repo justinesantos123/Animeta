@@ -51,16 +51,16 @@ export default function Profile() {
   }
 
   const input =
-    'w-full rounded-lg bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+    'w-full rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
   return (
     <div className="mx-auto max-w-md px-4 py-10 pb-24">
-      <h1 className="text-2xl font-extrabold">Profile</h1>
+      <h1 className="text-2xl font-bold">Profile</h1>
       <p className="mt-1 text-sm text-muted">
         Signed in as {preferredName(user)} · {user.role}
       </p>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-4 rounded-2xl bg-surface p-6 ring-1 ring-white/10">
+      <form onSubmit={onSubmit} className="mt-6 space-y-4 rounded-[var(--radius-card)] bg-surface p-6 ring-1 ring-[var(--color-line-strong)]">
         <div>
           <label htmlFor="p-username" className="mb-1 block text-xs font-medium text-muted">
             Username
@@ -99,17 +99,17 @@ export default function Profile() {
           </p>
         </div>
 
-        <div className="rounded-lg bg-bg px-3 py-2 text-xs text-muted">
+        <div className="rounded-[var(--radius-control)] bg-bg px-3 py-2 text-xs text-muted">
           Email <span className="text-text">{user.email}</span> (cannot be changed here)
         </div>
 
         {message && (
           <p
             role="status"
-            className={`rounded-lg px-3 py-2 text-xs ring-1 ${
+            className={`rounded-[var(--radius-control)] px-3 py-2 text-xs ring-1 ${
               message.ok
                 ? 'bg-accent/15 text-accent ring-accent/30'
-                : 'bg-cta/15 text-cta ring-cta/30'
+                : 'bg-[var(--color-danger)]/12 text-[var(--color-danger)] ring-[var(--color-danger)]/30'
             }`}
           >
             {message.text}
@@ -119,7 +119,7 @@ export default function Profile() {
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded-lg bg-cta px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+          className="w-full rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
         >
           {busy ? 'Saving…' : 'Save changes'}
         </button>

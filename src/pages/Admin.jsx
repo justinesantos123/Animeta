@@ -31,7 +31,7 @@ const EMPTY = {
 };
 
 const INPUT =
-  'w-full rounded-lg bg-surface px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+  'w-full rounded-[var(--radius-control)] bg-surface px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
 /**
  * Admin console. Server-side authorization is the real gate (see worker/api.js);
@@ -63,7 +63,7 @@ export default function Admin() {
   if (!ready || !user || !STAFF.includes(user.role)) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-24 text-center">
-        <p className="text-sm text-muted">Checking accessâ€¦</p>
+        <p className="text-sm text-muted">Checking access…</p>
       </div>
     );
   }
@@ -118,16 +118,16 @@ export default function Admin() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 pb-24">
-      <h1 className="text-2xl font-extrabold">Staff console</h1>
+      <h1 className="text-2xl font-bold">Staff console</h1>
       <p className="mt-1 text-sm text-muted">
-        Signed in as {user.email} Â·{' '}
+        Signed in as {user.email} ·{' '}
         <span className={isAdmin ? 'text-accent' : 'text-muted'}>
           {isAdmin ? 'admin' : 'moderator'}
         </span>
-        {!isAdmin && ' Â· catalog editing and account deletion are owner/admin only'}
+        {!isAdmin && ' · catalog editing and account deletion are owner/admin only'}
       </p>
 
-      <div className="mt-6 flex gap-1 border-b border-white/10" role="tablist">
+      <div className="mt-6 flex gap-1 border-b border-[var(--color-line-strong)]" role="tablist">
         {visibleTabs.map((t) => (
           <button
             key={t.id}
@@ -164,7 +164,7 @@ export default function Admin() {
             {editing ? `Editing "${editing}"` : 'Add a title to the catalog'}
           </p>
 
-          <form onSubmit={onSubmit} className="space-y-4 rounded-2xl bg-surface p-6 ring-1 ring-white/10">
+          <form onSubmit={onSubmit} className="space-y-4 rounded-[var(--radius-card)] bg-surface p-6 ring-1 ring-[var(--color-line-strong)]">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <label htmlFor="t" className="mb-1 block text-xs font-medium text-muted">
@@ -295,10 +295,10 @@ export default function Admin() {
             {message && (
               <p
                 role="status"
-                className={`rounded-lg px-3 py-2 text-xs ring-1 ${
+                className={`rounded-[var(--radius-control)] px-3 py-2 text-xs ring-1 ${
                   message.ok
                     ? 'bg-accent/15 text-accent ring-accent/30'
-                    : 'bg-cta/15 text-cta ring-cta/30'
+                    : 'bg-[var(--color-danger)]/12 text-[var(--color-danger)] ring-[var(--color-danger)]/30'
                 }`}
               >
                 {message.text}
@@ -309,15 +309,15 @@ export default function Admin() {
               <button
                 type="submit"
                 disabled={busy}
-                className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+                className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
               >
-                {busy ? 'Savingâ€¦' : editing ? 'Save changes' : 'Create title'}
+                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create title'}
               </button>
               {editing && (
                 <button
                   type="button"
                   onClick={reset}
-                  className="rounded-lg bg-surface-2 px-4 py-2 text-sm font-semibold ring-1 ring-white/10"
+                  className="rounded-[var(--radius-control)] bg-surface-2 px-4 py-2 text-sm font-semibold ring-1 ring-[var(--color-line-strong)]"
                 >
                   Cancel
                 </button>

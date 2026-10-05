@@ -3,7 +3,7 @@ import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 
 const INPUT =
-  'w-full rounded-lg bg-surface px-3 py-2 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+  'w-full rounded-[var(--radius-control)] bg-surface px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
 const AUDIENCES = [
   { id: 'all', label: 'Everyone' },
@@ -90,7 +90,7 @@ export default function NotificationComposer({ onSent }) {
   const canSubmit = title.trim() && body.trim() && (audience !== 'ids' || selected.length > 0);
 
   return (
-    <form onSubmit={onSubmit} className="space-y-3 rounded-xl bg-surface p-5 ring-1 ring-white/10">
+    <form onSubmit={onSubmit} className="space-y-3 rounded-[var(--radius-card)] bg-surface p-5 ring-1 ring-[var(--color-line-strong)]">
       <div>
         <h3 className="text-sm font-semibold">Send a notification</h3>
         <p className="mt-0.5 text-[11px] text-muted">
@@ -113,7 +113,7 @@ export default function NotificationComposer({ onSent }) {
               className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
                 audience === a.id
                   ? 'bg-accent text-white'
-                  : 'bg-surface-2 text-muted ring-1 ring-white/10 hover:text-text'
+                  : 'bg-surface-2 text-muted ring-1 ring-[var(--color-line-strong)] hover:text-text'
               }`}
             >
               {a.label}
@@ -124,7 +124,7 @@ export default function NotificationComposer({ onSent }) {
       </div>
 
       {audience === 'ids' && (
-        <div className="rounded-lg bg-bg p-3 ring-1 ring-white/10">
+        <div className="rounded-[var(--radius-control)] bg-bg p-3 ring-1 ring-[var(--color-line-strong)]">
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -210,10 +210,10 @@ export default function NotificationComposer({ onSent }) {
       {message && (
         <p
           role="status"
-          className={`rounded-lg px-3 py-2 text-xs ring-1 ${
+          className={`rounded-[var(--radius-control)] px-3 py-2 text-xs ring-1 ${
             message.ok
               ? 'bg-accent/15 text-accent ring-accent/30'
-              : 'bg-cta/15 text-cta ring-cta/30'
+              : 'bg-[var(--color-danger)]/12 text-[var(--color-danger)] ring-[var(--color-danger)]/30'
           }`}
         >
           {message.text}
@@ -223,7 +223,7 @@ export default function NotificationComposer({ onSent }) {
       <button
         type="submit"
         disabled={busy || !canSubmit}
-        className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
+        className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-50"
       >
         {busy ? 'Sending…' : 'Send notification'}
       </button>

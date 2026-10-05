@@ -32,14 +32,14 @@ export default function AuthPage() {
           {next !== '/' && (
             <Link
               to={next}
-              className="rounded-lg bg-cta px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
+              className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)]"
             >
               {next.startsWith('/title/') ? 'Back to the title' : 'Continue'}
             </Link>
           )}
           <Link
             to="/browse"
-            className="rounded-lg bg-surface px-5 py-2.5 text-sm font-semibold text-text ring-1 ring-white/10 transition hover:bg-surface-2"
+            className="rounded-[var(--radius-control)] bg-surface px-5 py-2.5 text-sm font-semibold text-text ring-1 ring-[var(--color-line-strong)] transition hover:bg-surface-2"
           >
             Continue browsing
           </Link>
@@ -64,12 +64,12 @@ export default function AuthPage() {
   }
 
   const inputClass =
-    'w-full rounded-lg bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+    'w-full rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
   return (
     <div className="mx-auto max-w-md px-4 py-16 pb-24">
-      <div className="rounded-2xl bg-surface p-7 ring-1 ring-white/10">
-        <h1 className="text-xl font-extrabold">
+      <div className="rounded-[var(--radius-card)] bg-surface p-7 ring-1 ring-[var(--color-line-strong)]">
+        <h1 className="text-xl font-bold">
           {mode === 'login' ? 'Sign in to Animeta' : 'Create your account'}
         </h1>
         <p className="mt-1 text-sm text-muted">
@@ -143,7 +143,7 @@ export default function AuthPage() {
           </div>
 
           {error && (
-            <p role="alert" className="rounded-lg bg-cta/15 px-3 py-2 text-xs text-cta ring-1 ring-cta/30">
+            <p role="alert" className="rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
               {error}
             </p>
           )}
@@ -151,7 +151,7 @@ export default function AuthPage() {
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-lg bg-cta px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+            className="w-full rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
           >
             {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
           </button>

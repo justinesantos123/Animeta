@@ -137,20 +137,32 @@ export default function TitleDetail() {
           aria-hidden="true"
           className="absolute inset-0 h-full w-full object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-bg via-bg/70 to-bg/20" />
-        <div className="relative mx-auto max-w-7xl px-4 pt-16 pb-8 md:pt-24">
-          <h1 className="max-w-3xl text-2xl font-extrabold md:text-4xl">{item.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted">
-            <span className="font-semibold text-accent">{Number(item.rating).toFixed(1)}</span>
-            <span>{item.releaseDate}</span>
+        <div className="absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-[var(--color-bg)]/85 to-[var(--color-bg)]/40" />
+        <div className="relative mx-auto flex min-h-[15rem] max-w-5xl flex-col justify-end px-4 pb-8 md:min-h-[19rem] md:pb-12">
+          <h1 className="max-w-3xl text-2xl font-bold leading-[1.15] tracking-[-0.02em] md:text-4xl">
+            {item.title}
+          </h1>
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-[var(--color-faint)]">
+            <span className="font-semibold tabular-nums text-[var(--color-text)]">
+              {Number(item.rating).toFixed(1)}
+            </span>
+            <span aria-hidden="true">/</span>
+            <span className="tabular-nums">{item.releaseDate}</span>
+            <span aria-hidden="true">/</span>
             <span>{item.runtime}</span>
-            <span className="uppercase tracking-wide">{titleTypeLabel(item.type)}</span>
-            {data.episodeCount > 0 && <span>{data.episodeCount} episodes</span>}
+            <span aria-hidden="true">/</span>
+            <span>{titleTypeLabel(item.type)}</span>
+            {data.episodeCount > 0 && (
+              <>
+                <span aria-hidden="true">/</span>
+                <span className="tabular-nums">{data.episodeCount} episodes</span>
+              </>
+            )}
           </div>
         </div>
       </section>
 
-      <div className="mx-auto max-w-7xl space-y-8 px-4">
+      <div className="mx-auto max-w-5xl space-y-7 px-4">
         {gatedEpisode ? (
           <PlaybackGate
             title={item.title}
@@ -169,24 +181,24 @@ export default function TitleDetail() {
             onProgress={onProgress}
           />
         ) : (
-          <div className="flex aspect-video w-full items-center justify-center rounded-2xl bg-surface text-sm text-muted ring-1 ring-white/10">
+          <div className="flex aspect-video w-full items-center justify-center rounded-[var(--radius-card)] bg-[var(--color-surface)] text-sm text-[var(--color-muted)] ring-1 ring-[var(--color-line)]">
             No video available for this title yet.
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="mr-auto text-lg font-bold">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 className="mr-auto flex flex-wrap items-baseline gap-2 text-base font-semibold">
             {playableEpisode ? (
-              <span className="flex flex-wrap items-center gap-2">
-                <span>
+              <>
+                <span className="tabular-nums text-[var(--color-faint)]">
                   S
-                  {episodesBySeason.find((g) => g.episodes.includes(playableEpisode))?.number ?? 1}{' '}
-                  · E{playableEpisode.episode_number}
+                  {episodesBySeason.find((g) => g.episodes.includes(playableEpisode))?.number ?? 1}
+                  {' · '}E{playableEpisode.episode_number}
                 </span>
-                <span className="text-base font-semibold text-muted">
+                <span className="text-sm font-normal text-[var(--color-muted)]">
                   {playableEpisode.title}
                 </span>
-              </span>
+              </>
             ) : (
               item.title
             )}
@@ -195,7 +207,7 @@ export default function TitleDetail() {
             <button
               type="button"
               onClick={() => setChosenId(null)}
-              className="rounded-lg bg-surface px-3 py-2 text-xs font-semibold text-muted ring-1 ring-white/10 transition hover:bg-surface-2"
+              className="btn-secondary px-3 py-1.5 text-xs"
             >
               Back to episode 1
             </button>
@@ -204,23 +216,25 @@ export default function TitleDetail() {
             type="button"
             onClick={() => toggle(item.slug)}
             aria-pressed={saved}
-            className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+            className={`rounded-[var(--radius-control)] px-3.5 py-1.5 text-xs font-medium transition ${
               saved
-                ? 'bg-surface-2 text-accent ring-1 ring-accent/50'
-                : 'bg-surface text-text ring-1 ring-white/10 hover:bg-surface-2'
+                ? 'bg-[var(--color-accent)]/12 text-[var(--color-accent-strong)] ring-1 ring-[var(--color-accent)]/40'
+                : 'text-[var(--color-muted)] ring-1 ring-[var(--color-line-strong)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
             }`}
           >
             {saved ? '✓ In watchlist' : '+ Add to watchlist'}
           </button>
         </div>
 
-        <p className="max-w-3xl text-sm leading-relaxed text-muted">{item.synopsis}</p>
+        <p className="max-w-3xl text-sm leading-relaxed text-[var(--color-muted)]">
+          {item.synopsis}
+        </p>
 
         <div className="flex flex-wrap gap-2">
           {(item.genres || []).map((g) => (
             <span
               key={g}
-              className="rounded-full bg-surface px-3 py-1 text-xs text-muted ring-1 ring-white/10"
+              className="rounded-full bg-surface px-3 py-1 text-xs text-muted ring-1 ring-[var(--color-line-strong)]"
             >
               {g}
             </span>
@@ -229,55 +243,71 @@ export default function TitleDetail() {
 
         {episodesBySeason.length > 0 && (
           <section aria-labelledby="episodes-heading">
-            <h2 id="episodes-heading" className="mb-4 text-lg font-bold">
-              Episodes
-            </h2>
+            <div className="section-head">
+              <h2 id="episodes-heading" className="section-head__title">
+                Episodes
+              </h2>
+              <span className="section-head__meta">{data.episodeCount} total</span>
+            </div>
 
-            <div className="space-y-6">
+            <div className="space-y-7">
               {episodesBySeason.map((group) => (
                 <div key={group.seasonId}>
-                  <h3 className="mb-2 text-sm font-semibold text-muted">
-                    Season {group.number}
-                    {group.description ? (
-                      <span className="ml-2 font-normal">{group.description}</span>
-                    ) : null}
+                  <h3 className="mb-2 flex items-baseline gap-2 text-xs font-medium text-[var(--color-faint)]">
+                    <span>Season {group.number}</span>
+                    {group.description && (
+                      <span className="font-normal text-[var(--color-faint)]">{group.description}</span>
+                    )}
                   </h3>
-                  <ul className="divide-y divide-white/5 overflow-hidden rounded-xl bg-surface ring-1 ring-white/5">
+                  <ul className="overflow-hidden rounded-[var(--radius-card)] bg-[var(--color-surface)] ring-1 ring-[var(--color-line)]">
                     {group.episodes.map((ep) => {
                       const isActive = playableEpisode?.id === ep.id;
                       return (
-                        <li key={ep.id}>
+                        <li
+                          key={ep.id}
+                          className="border-b border-[var(--color-line)] last:border-b-0"
+                        >
                           <button
                             type="button"
                             onClick={() => pickEpisode(ep)}
                             aria-current={isActive ? 'true' : undefined}
-                            className={`flex w-full items-center gap-4 px-4 py-3 text-left transition hover:bg-surface-2 ${
-                              isActive ? 'bg-surface-2' : ''
+                            className={`flex w-full items-center gap-3.5 px-3.5 py-2.5 text-left transition ${
+                              isActive
+                                ? 'bg-[var(--color-surface-2)]'
+                                : 'hover:bg-[var(--color-surface-2)]/60'
                             }`}
                           >
-                            <span className="w-8 shrink-0 text-center text-xs font-semibold text-accent">
+                            <span
+                              className={`w-6 shrink-0 text-right text-xs tabular-nums ${
+                                isActive
+                                  ? 'font-semibold text-[var(--color-accent)]'
+                                  : 'text-[var(--color-faint)]'
+                              }`}
+                            >
                               {ep.episode_number}
                             </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm font-medium">{ep.title}</span>
+                            <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text)]">
+                              {ep.title}
                             </span>
                             {ep.locked ? (
                               <span
                                 data-episode-access="locked"
-                                className="shrink-0 rounded bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent"
+                                className="shrink-0 text-[11px] text-[var(--color-faint)]"
                               >
                                 Sign up
                               </span>
                             ) : (
                               <span
                                 data-episode-access="free"
-                                className="shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted"
+                                className="shrink-0 rounded-[3px] bg-[var(--color-accent)]/12 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-accent-strong)]"
                               >
                                 Free
                               </span>
                             )}
                             {ep.runtime && (
-                              <span className="shrink-0 text-xs text-muted">{ep.runtime}</span>
+                              <span className="shrink-0 text-xs tabular-nums text-[var(--color-faint)]">
+                                {ep.runtime}
+                              </span>
                             )}
                           </button>
                         </li>
@@ -291,19 +321,21 @@ export default function TitleDetail() {
         )}
 
         {episodic && freeEpisode && !user && (
-          <p className="text-xs text-muted">
-            Episode 1 plays free. Sign up to watch episode 2 onwards and keep your progress.
+          <p className="text-xs text-[var(--color-faint)]">
+            Episode 1 plays free. An account is needed from episode 2 onwards.
           </p>
         )}
         {!episodic && (
-          <p className="text-xs text-muted">Movies play without an account.</p>
+          <p className="text-xs text-[var(--color-faint)]">This movie plays without an account.</p>
         )}
 
         <section aria-labelledby="related-heading">
-          <h2 id="related-heading" className="mb-4 text-lg font-bold">
-            Related Titles
-          </h2>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="section-head">
+            <h2 id="related-heading" className="section-head__title">
+              More like this
+            </h2>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {related.map((t) => (
               <TitleCard key={t.slug} item={t} />
             ))}

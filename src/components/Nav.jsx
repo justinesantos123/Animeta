@@ -42,7 +42,7 @@ function UserMenu() {
     return (
       <Link
         to="/auth"
-        className="rounded-lg bg-cta px-3 py-1.5 text-sm font-semibold text-white transition hover:brightness-110"
+        className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)]"
       >
         Sign In
       </Link>
@@ -58,7 +58,7 @@ function UserMenu() {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex items-center gap-2 rounded-lg bg-surface px-2.5 py-1.5 text-sm ring-1 ring-white/10 transition hover:bg-surface-2"
+        className="flex items-center gap-2 rounded-[var(--radius-control)] bg-surface px-2.5 py-1.5 text-sm ring-1 ring-[var(--color-line-strong)] transition hover:bg-surface-2"
       >
         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-white">
           {handle.charAt(0).toUpperCase()}
@@ -71,9 +71,9 @@ function UserMenu() {
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden="true" />
           <div
             role="menu"
-            className="absolute right-0 z-20 mt-2 w-56 overflow-hidden rounded-xl bg-surface ring-1 ring-white/10"
+            className="absolute right-0 z-20 mt-2 w-56 overflow-hidden rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]"
           >
-            <div className="border-b border-white/5 px-4 py-2.5">
+            <div className="border-b border-[var(--color-line)] px-4 py-2.5">
               <RoleBadge role={user.role} />
               <p className="truncate text-xs font-semibold text-text">{preferredName(user)}</p>
               <p className="truncate text-[11px] text-muted">{user.email}</p>
@@ -106,7 +106,7 @@ function UserMenu() {
                 setOpen(false);
                 setConfirmSignOut(true);
               }}
-              className="block w-full px-4 py-2 text-left text-sm text-cta transition hover:bg-surface-2"
+              className="block w-full px-4 py-2 text-left text-sm text-[var(--color-danger)] transition hover:bg-surface-2"
             >
               Sign out
             </button>
@@ -121,22 +121,28 @@ function UserMenu() {
 
 export function TopNav() {
   return (
-    <header className="sticky top-0 z-40 border-b border-white/5 bg-bg/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3">
-        <Link to="/" className="shrink-0 text-lg font-extrabold tracking-tight">
-          <span className="text-accent">ANI</span>
-          <span className="text-text">META</span>
+    <header className="sticky top-0 z-40 border-b border-[var(--color-line)] bg-[var(--color-bg)]/85 backdrop-blur-md">
+      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5">
+        <Link
+          to="/"
+          className="mr-1 shrink-0 text-[15px] font-bold tracking-[-0.01em]"
+          aria-label="Animeta home"
+        >
+          <span className="text-[var(--color-accent)]">ANI</span>
+          <span className="text-[var(--color-text)]">META</span>
         </Link>
 
-        <nav className="hidden items-center gap-1 md:flex" aria-label="Primary">
+        <nav className="hidden items-center gap-0.5 md:flex" aria-label="Primary">
           {LINKS.map((l) => (
             <NavLink
               key={l.to}
               to={l.to}
               end={l.to === '/'}
               className={({ isActive }) =>
-                `rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-                  isActive ? 'bg-surface-2 text-text' : 'text-muted hover:text-text'
+                `rounded-[var(--radius-control)] px-2.5 py-1.5 text-[13px] font-medium transition ${
+                  isActive
+                    ? 'bg-[var(--color-surface-2)] text-[var(--color-text)]'
+                    : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'
                 }`
               }
             >
@@ -145,20 +151,22 @@ export function TopNav() {
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1.5">
           {/* Categories, so they are one click from anywhere rather than only
               reachable through the Browse page. */}
           <nav
             aria-label="Categories"
-            className="hidden items-center gap-1 lg:flex"
+            className="hidden items-center gap-0.5 lg:flex"
           >
             {TITLE_TYPES.map((t) => (
               <NavLink
                 key={t.value}
                 to={typePath(t.value)}
                 className={({ isActive }) =>
-                  `rounded-lg px-2.5 py-1.5 text-sm font-medium transition ${
-                    isActive ? 'bg-surface-2 text-text' : 'text-muted hover:text-text'
+                  `rounded-[var(--radius-control)] px-2 py-1.5 text-[13px] font-medium transition ${
+                    isActive
+                      ? 'bg-[var(--color-surface-2)] text-[var(--color-text)]'
+                      : 'text-[var(--color-faint)] hover:text-[var(--color-text)]'
                   }`
                 }
               >
@@ -168,9 +176,9 @@ export function TopNav() {
           </nav>
           <Link
             to="/search"
-            className="hidden rounded-lg bg-surface px-3 py-1.5 text-sm text-muted transition hover:text-text xl:block"
+            className="hidden rounded-[var(--radius-control)] px-2.5 py-1.5 text-[13px] text-[var(--color-faint)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] xl:block"
           >
-            Search titles…
+            Search
           </Link>
           <UserMenu />
           <NotificationBell />
@@ -184,9 +192,9 @@ export function BottomNav() {
   return (
     <nav
       aria-label="Primary mobile"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-white/5 bg-bg/95 backdrop-blur-md md:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--color-line)] bg-[var(--color-bg)]/95 backdrop-blur-md md:hidden"
     >
-      <div className="grid grid-cols-4">
+      <div className="grid grid-cols-5">
         {LINKS.map((l) => (
           <NavLink
             key={l.to}
@@ -194,7 +202,7 @@ export function BottomNav() {
             end={l.to === '/'}
             className={({ isActive }) =>
               `flex flex-col items-center gap-1 py-2.5 text-[10px] font-medium transition ${
-                isActive ? 'text-accent' : 'text-muted'
+                isActive ? 'text-[var(--color-accent)]' : 'text-[var(--color-faint)]'
               }`
             }
           >

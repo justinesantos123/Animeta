@@ -33,20 +33,20 @@ export default function ResetPassword() {
   }
 
   const input =
-    'w-full rounded-lg bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+    'w-full rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
   if (done) {
     return (
       <div className="mx-auto max-w-md px-4 py-24">
-        <div className="rounded-2xl bg-surface p-7 text-center ring-1 ring-white/10">
+        <div className="rounded-[var(--radius-card)] bg-surface p-7 text-center ring-1 ring-[var(--color-line-strong)]">
           <p className="text-2xl">✓</p>
-          <h1 className="mt-2 text-xl font-extrabold">Password updated</h1>
+          <h1 className="mt-2 text-xl font-bold">Password updated</h1>
           <p className="mt-2 text-sm text-muted">
             You can now sign in with your new password.
           </p>
           <Link
             to="/auth"
-            className="mt-6 inline-block rounded-lg bg-cta px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
+            className="mt-6 inline-block rounded-[var(--radius-control)] bg-[var(--color-accent)] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)]"
           >
             Go to sign in
           </Link>
@@ -57,8 +57,8 @@ export default function ResetPassword() {
 
   return (
     <div className="mx-auto max-w-md px-4 py-16 pb-24">
-      <div className="rounded-2xl bg-surface p-7 ring-1 ring-white/10">
-        <h1 className="text-xl font-extrabold">Choose a new password</h1>
+      <div className="rounded-[var(--radius-card)] bg-surface p-7 ring-1 ring-[var(--color-line-strong)]">
+        <h1 className="text-xl font-bold">Choose a new password</h1>
 
         {!token ? (
           <>
@@ -67,7 +67,7 @@ export default function ResetPassword() {
             </p>
             <Link
               to="/auth"
-              className="mt-6 inline-block rounded-lg bg-surface-2 px-4 py-2.5 text-sm font-semibold ring-1 ring-white/10"
+              className="mt-6 inline-block rounded-[var(--radius-control)] bg-surface-2 px-4 py-2.5 text-sm font-semibold ring-1 ring-[var(--color-line-strong)]"
             >
               Back to sign in
             </Link>
@@ -108,7 +108,7 @@ export default function ResetPassword() {
             </div>
 
             {error && (
-              <p role="alert" className="rounded-lg bg-cta/15 px-3 py-2 text-xs text-cta ring-1 ring-cta/30">
+              <p role="alert" className="rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
                 {error}
               </p>
             )}
@@ -116,7 +116,7 @@ export default function ResetPassword() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-lg bg-cta px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+              className="w-full rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
             >
               {busy ? 'Updating…' : 'Update password'}
             </button>

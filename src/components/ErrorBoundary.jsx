@@ -28,7 +28,7 @@ export default class ErrorBoundary extends Component {
 
     return (
       <div className="mx-auto max-w-lg px-4 py-20 text-center">
-        <div role="alert" className="rounded-2xl bg-surface p-8 ring-1 ring-white/10">
+        <div role="alert" className="rounded-[var(--radius-card)] bg-surface p-8 ring-1 ring-[var(--color-line-strong)]">
           <h1 className="text-lg font-bold">This section failed to load</h1>
           <p className="mt-2 text-sm text-muted">
             Something went wrong while drawing this page. Reloading usually clears it. If it keeps
@@ -37,7 +37,7 @@ export default class ErrorBoundary extends Component {
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="mt-5 rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110"
+            className="mt-5 rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)]"
           >
             Reload
           </button>

@@ -587,9 +587,12 @@ async function checkBrowseListing() {
   await new Promise((r) => setTimeout(r, 600));
 
   const headings = [...doc.querySelectorAll('section[aria-labelledby] h2')].map((h) => h.textContent.trim());
-  const chips = [...doc.querySelectorAll('nav[aria-label="Filter by type"] button')].map((b) =>
-    b.textContent.replace(/\s+/g, ' ').trim(),
-  );
+// The Browse filter nav. Matched on its accessible name so a copy change to
+// the label does not silently turn this into a vacuous check.
+const filterNav = doc.querySelector('nav[aria-label="Filter by category"], nav[aria-label="Filter by type"]');
+const chips = [...(filterNav?.querySelectorAll('button') || [])].map((b) =>
+  b.textContent.replace(/\s+/g, ' ').trim(),
+);
   const cards = doc.querySelectorAll('a[href^="/title/"]').length;
 
   window.close();

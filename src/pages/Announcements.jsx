@@ -34,7 +34,7 @@ export default function Announcements() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 pb-24">
-      <h1 className="text-2xl font-extrabold">Announcements</h1>
+      <h1 className="text-2xl font-bold">Announcements</h1>
       <p className="mt-1 text-sm text-muted">
         {isStaff
           ? 'Everything posted here, including staff-only notices.'
@@ -49,13 +49,13 @@ export default function Announcements() {
       )}
 
       {error && (
-        <p role="alert" className="mt-6 rounded-lg bg-cta/15 px-3 py-2 text-xs text-cta ring-1 ring-cta/30">
+        <p role="alert" className="mt-6 rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
           {error}
         </p>
       )}
 
       {!loading && !error && items.length === 0 && (
-        <div className="mt-8 rounded-xl bg-surface p-12 text-center ring-1 ring-white/5">
+        <div className="mt-8 rounded-[var(--radius-card)] bg-surface p-12 text-center ring-1 ring-[var(--color-line)]">
           <p className="text-sm text-muted">No announcements yet.</p>
         </div>
       )}
@@ -64,8 +64,8 @@ export default function Announcements() {
         {items.map((a) => (
           <article
             key={a.id}
-            className={`rounded-xl bg-surface p-4 ring-1 ${
-              a.pinned ? 'ring-accent/40' : 'ring-white/10'
+            className={`rounded-[var(--radius-card)] bg-surface p-4 ring-1 ${
+              a.pinned ? 'ring-accent/40' : 'ring-[var(--color-line-strong)]'
             }`}
           >
             <div className="flex flex-wrap items-center gap-2">

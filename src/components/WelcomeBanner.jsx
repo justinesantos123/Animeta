@@ -27,7 +27,7 @@ export default function WelcomeBanner() {
       aria-live="polite"
       className="sticky top-16 z-30 mx-auto mt-4 w-full max-w-7xl px-4"
     >
-      <div className="flex items-center gap-3 rounded-xl bg-accent/15 px-4 py-3 ring-1 ring-accent/40 backdrop-blur-md">
+      <div className="flex items-center gap-3 rounded-[var(--radius-card)] bg-accent/15 px-4 py-3 ring-1 ring-accent/40 backdrop-blur-md">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-bold text-white">
           {greeting.name.charAt(0).toUpperCase()}
         </span>
@@ -41,7 +41,7 @@ export default function WelcomeBanner() {
           type="button"
           onClick={dismissGreeting}
           aria-label="Dismiss greeting"
-          className="shrink-0 rounded-lg px-2 py-1 text-xs font-medium text-accent transition hover:bg-accent/20"
+          className="shrink-0 rounded-[var(--radius-control)] px-2 py-1 text-xs font-medium text-accent transition hover:bg-accent/20"
         >
           Dismiss
         </button>

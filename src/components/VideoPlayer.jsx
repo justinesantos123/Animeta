@@ -81,7 +81,7 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgre
   }, [onProgress]);
 
   return (
-    <div className="relative w-full overflow-hidden rounded-xl bg-black shadow-2xl ring-1 ring-white/10">
+    <div className="relative w-full overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-[var(--color-line)]">
       <div className="aspect-video w-full">
         <video
           ref={videoRef}
@@ -100,16 +100,16 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgre
 
       {status === 'loading' && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
-          <span className="flex items-center gap-3 text-sm text-white/80">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-            Loading stream…
+          <span className="flex items-center gap-2.5 text-xs text-white/70">
+            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/70 border-t-transparent" />
+            Loading stream
           </span>
         </div>
       )}
 
       {status === 'error' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/85 p-6 text-center">
-          <p className="text-sm font-semibold text-cta">Playback failed</p>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/85 p-6 text-center">
+          <p className="text-sm font-semibold text-[var(--color-danger)]">Playback failed</p>
           <p className="max-w-sm text-xs text-white/60">{error}</p>
         </div>
       )}

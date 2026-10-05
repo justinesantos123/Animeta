@@ -36,21 +36,21 @@ export default function NotificationBell() {
         onClick={() => setOpen((v) => !v)}
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
         aria-expanded={open}
-        className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-surface text-muted ring-1 ring-white/10 transition hover:text-text"
+        className="relative flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] bg-surface text-muted ring-1 ring-[var(--color-line-strong)] transition hover:text-text"
       >
         <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden="true">
           <path d="M12 22a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 22zm7-6v-5a7 7 0 10-14 0v5l-2 2v1h18v-1l-2-2z" />
         </svg>
         {unread > 0 && (
-          <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-cta px-1 text-[10px] font-bold text-white">
+          <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent)] px-1 text-[10px] font-bold text-white">
             {unread > 9 ? '9+' : unread}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-xl bg-surface shadow-2xl ring-1 ring-white/10 sm:w-96">
-          <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
+        <div className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-[var(--radius-card)] bg-surface shadow-2xl ring-1 ring-[var(--color-line-strong)] sm:w-96">
+          <div className="flex items-center justify-between border-b border-[var(--color-line-strong)] px-4 py-2.5">
             <span className="text-sm font-semibold">Notifications</span>
             {unread > 0 && (
               <button
@@ -102,7 +102,7 @@ export default function NotificationBell() {
             ))}
           </ul>
 
-          <div className="border-t border-white/10 px-4 py-2.5">
+          <div className="border-t border-[var(--color-line-strong)] px-4 py-2.5">
             <Link
               to="/announcements"
               onClick={() => setOpen(false)}
