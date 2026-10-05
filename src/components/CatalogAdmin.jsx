@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { TITLE_TYPES, titleTypeLabel } from '../lib/titleTypes';
 import EmbedPicker from './EmbedPicker';
+import SeriesImporter from './SeriesImporter';
 import VideoUploader, { probeVideo } from './VideoUploader';
 import { useAuth } from '../context/AuthContext';
 
@@ -210,6 +211,16 @@ const [upload, setUpload] = useState(null);
             AI anime and drama people make themselves; the other two are for work
             that already lives somewhere else. Exactly one of the three is used. */}
         <div className="mb-4 space-y-4">
+          {/* The fast route to a full season. Above the single-video pickers
+              because a series is what most of the catalog is. */}
+          <SeriesImporter
+            onMessage={(msg) => {
+              if (!msg) return;
+              setMessage({ ok: msg.ok, text: msg.text, warn: false });
+            }}
+            onImported={() => load()}
+          />
+
           {canUpload ? (
             <VideoUploader
               onUploaded={async (up, file) => {

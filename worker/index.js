@@ -23,17 +23,20 @@ export default {
       return new Response('Method not allowed', { status: 405 });
     }
 
-    const res = await env.ASSETS.fetch(request);
-
-    // Client-side routes (/title/x, /search, /watchlist) have no matching file.
-    // Serve the SPA shell instead, but leave real asset requests alone.
-    if (res.status === 404) {
-      const looksLikeFile = url.pathname.includes('.');
-      if (!looksLikeFile) {
-        return env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
-      }
+    // Client-side routes (/title/x, /browse, /search, /watchlist) have no file
+    // behind them and must get the SPA shell.
+    //
+    // The decision is made from the path rather than from what ASSETS returns.
+    // ASSETS answers an unmatched navigation with a 307 to "/", not a 404, so
+    // the old "if it 404s, serve index.html" fallback never fired: every direct
+    // link and every refresh on a non-home page bounced back to the homepage.
+    //
+    // Slugs are produced by slugify, which strips everything but [a-z0-9-], so a
+    // real route never contains a dot. An extension therefore means a file.
+    if (!url.pathname.includes('.')) {
+      return env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
     }
 
-    return res;
+    return env.ASSETS.fetch(request);
   },
 };

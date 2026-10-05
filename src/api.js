@@ -77,6 +77,8 @@ export const api = {
   archiveLookup: (payload) => request('/archive/lookup', { method: 'POST', body: payload }),
   // Pasted embed snippet or share link -> provider, id and a rebuilt player URL.
   embedLookup: (url) => request('/embed/lookup', { method: 'POST', body: { url } }),
+  // Posts a whole series from a pasted list of episode links.
+  importSeries: (payload) => request('/titles/import-series', { method: 'POST', body: payload }),
 
   // Uploads. The file goes up as a raw request body rather than JSON, so this
   // uses XMLHttpRequest directly: it is the only way to get upload progress.

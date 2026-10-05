@@ -347,6 +347,118 @@ async function checkPlaybackGate() {
     };
   }
 
+  /**
+   * Opens a title page whose episodes are all YouTube embeds, in the exact shape
+   * the import endpoint produces: no title-level video, episodes snake_case.
+   *
+   * The generic mock above only ever gave episodes an HLS manifest URL, so the
+   * embed-on-an-episode path was never rendered and its casing mismatch went
+   * unnoticed. Every episode here is an embed instead.
+   */
+  async function openEmbedSeries(route, { signedIn } = {}) {
+    const errors = [];
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.on('jsdomError', (e) => errors.push(e.message));
+    virtualConsole.on('error', (...a) => errors.push(a.map(String).join(' ')));
+
+    const rows = [
+      { id: 'e1', n: 1, locked: false },
+      { id: 'e2', n: 2, locked: !signedIn },
+      { id: 'e3', n: 3, locked: !signedIn },
+    ].map((r) => ({
+      id: r.id,
+      season_id: 's1',
+      episode_number: r.n,
+      title: `Episode ${r.n}`,
+      runtime: '24:00',
+      video_manifest_url: null,
+      subtitles_url: null,
+      video_kind: 'embed',
+      embed_provider: 'youtube',
+      embed_id: `ep${r.n}VideoId`,
+      ...(r.locked ? { locked: true } : {}),
+    }));
+
+const dom = new JSDOM(html, {
+      url: `https://animeta.test${route}`,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      virtualConsole,
+    });
+    const { window } = dom;
+
+    // Scoped here rather than borrowed from `open`, which is a sibling.
+    const json = (body, status = 200) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    });
+
+    window.fetch = async (input) => {
+      const path = String(typeof input === 'string' ? input : input?.url || '')
+        .replace(/^https:\/\/animeta\.test/, '')
+        .split('?')[0];
+      if (path === '/api/auth/me') {
+        return json({
+          user: signedIn
+            ? { id: 'u1', email: 'a@b.com', username: 'kaede', role: 'user' }
+            : null,
+        });
+      }
+      if (path.startsWith('/api/titles/')) {
+        return json({
+          title: {
+            id: 't1', slug: 'embed-series', type: 'series', title: 'Embed series',
+            synopsis: 'Imported from a pasted list.', genres: ['Drama'],
+            releaseDate: '2026-01-01', runtime: null, rating: 0,
+            posterUrl: '', backdropUrl: '',
+            // A series has no video of its own; the episodes carry it.
+            videoUrl: null, videoSource: null, videoKind: null,
+            embedProvider: null, embedId: null, uploadId: null,
+            subtitlesUrl: null, featured: false,
+          },
+          locked: false,
+          previewOnly: true,
+          canPlayFirstEpisode: true,
+          hasEpisodes: true,
+          seasons: [{ id: 's1', season_number: 1, description: 'Season one' }],
+          episodes: rows,
+          episodeCount: rows.length,
+        });
+      }
+      // The surrounding chrome fetches these on every page, so each has to answer with
+      // the shape the caller expects. Returning {} for any of them throws inside a
+      // provider and takes the page down with it.
+      if (path === '/api/announcements') return json({ announcements: [] });
+      if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
+      if (path === '/api/preroll') return json({ ad: null });
+      if (path === '/api/settings') {
+        return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+      }
+      if (path === '/api/watchlist') return json({ titles: [] });
+      if (path === '/api/titles') return json({ titles: [] });
+      return json({});
+    };
+
+    if (!window.matchMedia) {
+      window.matchMedia = () => ({
+        matches: false, addListener() {}, removeListener() {},
+        addEventListener() {}, removeEventListener() {},
+      });
+    }
+    window.scrollTo = () => {};
+    window.HTMLMediaElement.prototype.play = () => Promise.resolve();
+
+    try {
+      window.eval(bundle);
+    } catch (e) {
+      errors.push(e.message);
+    }
+
+    await new Promise((r) => setTimeout(r, 550));
+    return { window, errors, rows };
+  }
+
   async function open(route, { signedIn, episodes = 3 }) {
     const errors = [];
     const virtualConsole = new VirtualConsole();
@@ -466,6 +578,73 @@ async function checkPlaybackGate() {
     } else {
       console.log(`ok   ${slug} signed out: episode 1 free and playing, 2 need an account`);
     }
+  }
+
+  // An imported series: no title-level video, every episode a YouTube embed in
+  // snake_case, which is the only shape the import endpoint produces.
+  //
+  // The generic mock above only ever gave episodes an HLS manifest URL, so this
+  // path was never rendered. The component read embed fields in camelCase while
+  // episodes arrive snake_case, so the embed was always undefined and no player
+  // appeared at all.
+  {
+    const { window, errors } = await openEmbedSeries('/title/embed-series', { signedIn: false });
+    const iframes = [...window.document.querySelectorAll('iframe')];
+    const srcs = iframes.map((f) => f.getAttribute('src') || '');
+    const text = window.document.body.textContent || '';
+
+    // Guards against "Plays on YouTube." passing while no player is actually mounted:
+    // the fallback notice renders text, so only the iframe proves playback.
+    if (!/Plays on YouTube/.test(text)) {
+      failed++;
+      console.log('FAIL embed-series  the embed provider label is missing');
+    }
+
+    if (errors.length) {
+      failed++;
+      console.log(`FAIL embed-series  errored: ${errors[0].split('\n')[0]}`);
+    } else if (iframes.length !== 1) {
+      failed++;
+      console.log(
+        `FAIL embed-series  expected 1 embed iframe for the free episode, found ${iframes.length}`,
+      );
+    } else if (!/\/embed\/ep1VideoId\?/.test(srcs[0])) {
+      failed++;
+      console.log(`FAIL embed-series  iframe src is wrong: ${JSON.stringify(srcs[0])}`);
+    } else if (/No video available/.test(text)) {
+      failed++;
+      console.log('FAIL embed-series  reported no video available despite episode embeds');
+    } else {
+      console.log('ok   an imported embed series plays episode 1 from the pasted link');
+    }
+    window.close();
+  }
+
+  // Switching episode must swap the iframe rather than leave the first one up.
+  {
+    const { window, errors } = await openEmbedSeries('/title/embed-series', { signedIn: true });
+    const buttons = [...window.document.querySelectorAll('button')].filter((b) =>
+      /^\s*\d+\s*Episode/.test(b.textContent || ''),
+    );
+
+    if (errors.length) {
+      failed++;
+      console.log(`FAIL embed-series  episode switch errored: ${errors[0].split('\n')[0]}`);
+    } else if (buttons.length < 3) {
+      failed++;
+      console.log(`FAIL embed-series  expected 3 episode buttons, found ${buttons.length}`);
+    } else {
+      buttons[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      const src = window.document.querySelector('iframe')?.getAttribute('src') || '';
+      if (!/\/embed\/ep2VideoId\?/.test(src)) {
+        failed++;
+        console.log(`FAIL embed-series  choosing episode 2 did not swap the player: ${src}`);
+      } else {
+        console.log('ok   choosing another episode swaps the embed to that episode');
+      }
+    }
+    window.close();
   }
 
   // Signed in: every episode plays and nothing is marked as locked.

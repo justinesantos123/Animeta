@@ -134,8 +134,18 @@ export default function TitleDetail() {
 
   // An advert must never pre-roll an advert, and pre-rolling a page with
   // nothing to play would be an advert in front of nothing.
+  //
+  // Episodes count as playable here. A series carries no video of its own, so
+  // checking only the title meant an imported series could never show a pre-roll
+  // — the one title shape the importer produces.
   const preRollEligible =
-    !sponsored && Boolean(data.title.videoUrl || data.title.streamUrl || data.title.embedId);
+    !sponsored &&
+    Boolean(
+      data.title.videoUrl ||
+        data.title.streamUrl ||
+        data.title.embedId ||
+        episodes.some((e) => e.video_manifest_url || e.embed_id),
+    );
 
   // A locked episode that was picked shows the gate instead of playing.
   const gatedEpisode = episode?.locked ? episode : null;
@@ -145,9 +155,14 @@ export default function TitleDetail() {
   // Worker issues per request. Episodes can carry either too, which is why this
   // reads off whichever item is actually being played.
   const source = playableEpisode ?? item;
-  const embedKind = source.videoKind === 'embed';
-  const embedProvider = source.embedProvider;
-  const embedId = source.embedId;
+
+  // The two shapes disagree on casing: the title arrives camelCase from the
+  // title endpoint, episodes arrive snake_case from the episode rows. Reading
+  // only one of the two spellings meant an embed on an episode was always
+  // undefined, so imported episode embeds rendered no player at all.
+  const embedKind = (source.videoKind ?? source.video_kind) === 'embed';
+  const embedProvider = source.embedProvider ?? source.embed_provider;
+  const embedId = source.embedId ?? source.embed_id;
 
   const streamUrl = playableEpisode
     ? playableEpisode.video_manifest_url
@@ -263,7 +278,7 @@ export default function TitleDetail() {
                 // Decides whether the browser can play this directly or hls.js has
                 // to be involved. A streamed upload has no file extension, so the
                 // kind is the only way to tell it apart from a real .m3u8.
-                kind={source.videoKind}
+                kind={source.videoKind ?? source.video_kind}
                 poster={item.backdropUrl || item.posterUrl}
                 subtitlesUrl={subtitleUrl}
                 title={nowPlaying}

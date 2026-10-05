@@ -17,6 +17,7 @@ import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES, TITLE_TYPES as TITLE_TYPE_VALUES } from './access.js';
 import { parseEmbed, fetchEmbedMetadata, embedUrl as buildEmbedUrl } from './embed.js';
+import { parseEpisodeList, MAX_EPISODES_PER_IMPORT } from './episode-import.js';
 import {
   handleCreateUpload,
   handleFinaliseUpload,
@@ -2608,6 +2609,146 @@ async function handleListAds(request, env) {
   return json({ ads });
 }
 
+/**
+ * POST /api/titles/import-series
+ *
+ * Posts a whole series in one go from a pasted list of episode links. This is
+ * the practical route to a real catalog: a rights holder's YouTube channel can
+ * be pasted episode by episode, and the whole season is created atomically.
+ *
+ * Gated on the "catalog" permission like any other posting.
+ *
+ * The inserts go into one D1 batch, so a series cannot end up with a title and
+ * half its episodes: either all of it lands or none of it does. The links are
+ * parsed with the same parseEmbed the console uses, so a pasted snippet is
+ * reduced to a provider and an id and nothing else survives into the database.
+ */
+async function handleImportSeries(request, env) {
+  const auth = await requirePermission(request, env, 'catalog');
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const name = String(body.title ?? '').trim();
+  if (!name) return json({ error: 'A title is required' }, 400);
+
+  const type = String(body.type ?? 'series');
+  if (!TITLE_TYPE_VALUES.includes(type)) {
+    return json({ error: `type must be one of: ${TITLE_TYPE_VALUES.join(', ')}` }, 400);
+  }
+  if (type === AD_TYPE) {
+    return json({ error: 'An advert is a single video, not a series' }, 400);
+  }
+
+  const { episodes, problems, tooMany } = parseEpisodeList(body.episodes, parseEmbed);
+  if (tooMany) {
+    return json(
+      { error: `That is more than ${MAX_EPISODES_PER_IMPORT} episodes. Import them in batches.` },
+      400,
+    );
+  }
+  if (episodes.length === 0) {
+    return json(
+      {
+        error:
+          problems.length > 0
+            ? `None of the ${problems.length} lines could be read. First problem, line ${problems[0].line}: ${problems[0].error}`
+            : 'No episode links found in the pasted list',
+      },
+      400,
+    );
+  }
+
+  const slug = slugify(body.slug || name);
+  if (!slug) return json({ error: 'Could not derive a slug from that title' }, 400);
+
+  const clash = await env.DB.prepare('SELECT id FROM titles WHERE slug = ?').bind(slug).first();
+  if (clash) return json({ error: 'A title with that slug already exists' }, 409);
+
+  const titleId = randomHex(16);
+  const seasonId = randomHex(16);
+  const genres = JSON.stringify(normalizeGenres(body.genres));
+
+  // Every statement in one batch: D1 applies them together, so a failure part
+  // way through cannot leave a title with no episodes.
+  const statements = [
+    env.DB.prepare(
+      `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
+         poster_url, backdrop_url, video_url, video_source, video_kind, embed_provider, embed_id,
+         upload_id, subtitles_url, featured)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(
+      titleId,
+      slug,
+      type,
+      name,
+      String(body.synopsis ?? ''),
+      genres,
+      body.releaseDate || null,
+      null,
+      Number(body.rating ?? 0),
+      body.posterUrl || null,
+      body.backdropUrl || null,
+      // A series has no video of its own; each episode carries it. Every
+      // remaining column is bound explicitly and in order, because this list is
+      // positional and one missing null throws inside D1 with no useful message.
+      null, // video_url
+      null, // video_source
+      null, // video_kind
+      null, // embed_provider
+      null, // embed_id
+      null, // upload_id
+      null, // subtitles_url
+      body.featured ? 1 : 0, // featured
+    ),
+    env.DB.prepare(
+      'INSERT INTO seasons (id, title_id, season_number, description) VALUES (?,?,?,?)',
+    ).bind(seasonId, titleId, 1, body.seasonDescription || null),
+  ];
+
+  for (const ep of episodes) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO episodes (id, season_id, episode_number, title, video_kind, embed_provider, embed_id)
+         VALUES (?,?,?,?,?,?,?)`,
+      ).bind(
+        randomHex(16),
+        seasonId,
+        ep.number,
+        ep.title || `Episode ${ep.number}`,
+        'embed',
+        ep.provider,
+        ep.videoId,
+      ),
+    );
+  }
+
+  await env.DB.batch(statements);
+
+  await logAdminAction(
+    env,
+    auth.user.id,
+    'title.import',
+    titleId,
+    `${slug}: ${episodes.length} episodes`,
+  );
+
+  return json(
+    {
+      title: { slug, title: name, type, episodeCount: episodes.length },
+      // Returned rather than swallowed: staff need to know which lines to fix.
+      problems,
+      imported: episodes.length,
+    },
+    201,
+  );
+}
+
 async function handleGetSettings(request, env) {
   const auth = await requireStaff(request, env);
   if (auth.error) return auth.error;
@@ -2857,6 +2998,12 @@ export async function handleApi(request, env, url) {
       if (seg[2] === 'users' && seg.length === 4 && method === 'DELETE') {
         return handleDeleteUser(request, env, seg[3]);
       }
+    }
+
+    // Bulk series import. Must be matched before the generic /:slug routes below
+    // or "import-series" would be read as a slug.
+    if (seg[1] === 'titles' && seg[2] === 'import-series' && seg.length === 3 && method === 'POST') {
+      return handleImportSeries(request, env);
     }
 
     if (seg[1] === 'titles') {
