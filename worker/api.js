@@ -16,6 +16,7 @@ import {
 import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES } from './access.js';
+import { lookupExternalId } from './tmdb.js';
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -575,6 +576,24 @@ function slugify(value) {
     .slice(0, 80);
 }
 
+/**
+ * Genres are stored as a JSON array but arrive from several places: the staff
+ * form sends a comma-separated string, scripts send an array. Accepting only an
+ * array meant a string silently became [], losing the genres with no error.
+ */
+function normalizeGenres(input) {
+  if (Array.isArray(input)) {
+    return input.map((g) => String(g).trim()).filter(Boolean);
+  }
+  if (typeof input === 'string') {
+    return input
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
 async function handleCreateTitle(request, env) {
   const auth = await requireAdmin(request, env);
   if (auth.error) return auth.error;
@@ -590,7 +609,7 @@ async function handleCreateTitle(request, env) {
   const name = String(body.title ?? '').trim();
   if (!name) return json({ error: 'Title is required' }, 400);
   if (!['anime', 'movie', 'series', 'ai'].includes(type)) {
-    return json({ error: 'type must be anime, movie or series' }, 400);
+    return json({ error: 'type must be anime, movie, series or ai' }, 400);
   }
 
   let slug = slugify(body.slug || name);
@@ -600,7 +619,7 @@ async function handleCreateTitle(request, env) {
   if (clash) return json({ error: 'A title with that slug already exists' }, 409);
 
   const id = randomHex(16);
-  const genres = JSON.stringify(Array.isArray(body.genres) ? body.genres : []);
+  const genres = JSON.stringify(normalizeGenres(body.genres));
 
   await env.DB.prepare(
     `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
@@ -652,7 +671,9 @@ async function handleUpdateTitle(request, env, slug) {
   const next = {
     title: body.title ?? existing.title,
     synopsis: body.synopsis ?? existing.synopsis,
-    genres: body.genres ? JSON.stringify(body.genres) : existing.genres,
+    // Same normalisation as create: a comma-separated string from the form must
+    // not end up as a JSON string in the genres column.
+    genres: body.genres ? JSON.stringify(normalizeGenres(body.genres)) : existing.genres,
     release_date: body.releaseDate ?? existing.release_date,
     runtime: body.runtime ?? existing.runtime,
     rating: body.rating ?? existing.rating,
@@ -1781,6 +1802,53 @@ function decoyHash() {
   return decoyHashPromise;
 }
 
+/**
+ * Resolves a TMDB or IMDb id to catalog metadata, for the staff console.
+ * Admin only: it spends the TMDB quota, so it must not be open to any account.
+ */
+async function handleTmdbLookup(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const result = await lookupExternalId(body.id, env.TMDB_API_KEY);
+  if (result.error) return json({ error: result.error }, 400);
+  return json({ title: result });
+}
+
+/**
+ * Every title, for the staff catalog list. Admin only.
+ */
+async function handleListTitlesAdmin(request, env, url) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  const type = url.searchParams.get('type');
+  const where = type && ['anime', 'movie', 'series', 'ai'].includes(type) ? 'WHERE type = ?' : '';
+  const sql = `SELECT t.*, (SELECT COUNT(*) FROM seasons s WHERE s.title_id = t.id) AS season_count,
+    (SELECT COUNT(*) FROM episodes e JOIN seasons s2 ON s2.id = e.season_id WHERE s2.title_id = t.id) AS episode_count
+    FROM titles t ${where} ORDER BY t.created_at DESC`;
+
+  const { results } = await env.DB.prepare(sql)
+    .bind(...(where ? [type] : []))
+    .all();
+
+  return json({
+    titles: results.map((r) => ({
+      ...shapeTitle(r),
+      seasonCount: r.season_count,
+      episodeCount: r.episode_count,
+      createdAt: r.created_at,
+    })),
+  });
+}
+
 // ---------------------------------------------------------------- router
 
 export async function handleApi(request, env, url) {
@@ -1830,11 +1898,20 @@ export async function handleApi(request, env, url) {
     }
 
     if (seg[1] === 'titles') {
+      // Must come before the generic get-by-slug route below, otherwise
+      // /api/titles/staff is read as a title whose slug is "staff" and 404s.
+      if (seg.length === 3 && seg[2] === 'staff' && method === 'GET') {
+        return handleListTitlesAdmin(request, env, url);
+      }
       if (seg.length === 2 && method === 'GET') return handleListTitles(request, env, url);
       if (seg.length === 3 && method === 'GET') return handleGetTitle(request, env, url, seg[2]);
       if (seg.length === 2 && method === 'POST') return handleCreateTitle(request, env);
       if (seg.length === 3 && method === 'PUT') return handleUpdateTitle(request, env, seg[2]);
       if (seg.length === 3 && method === 'DELETE') return handleDeleteTitle(request, env, seg[2]);
+    }
+
+    if (seg[1] === 'tmdb' && seg[2] === 'lookup' && method === 'POST') {
+      return handleTmdbLookup(request, env);
     }
 
     if (seg[1] === 'watchlist') {

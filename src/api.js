@@ -55,6 +55,9 @@ export const api = {
   updateTitle: (slug, payload) =>
     request(`/titles/${encodeURIComponent(slug)}`, { method: 'PUT', body: payload }),
   deleteTitle: (slug) => request(`/titles/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  listTitlesAdmin: () => request('/titles/staff'),
+  // Resolves a TMDB or IMDb id to catalog metadata, server-side.
+  tmdbLookup: (id) => request('/tmdb/lookup', { method: 'POST', body: { id } }),
 
   // admin user management
   dashboard: () => request('/admin/dashboard'),

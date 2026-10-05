@@ -12,7 +12,7 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:staff": "node scripts/smoke-staff.mjs",
     "seed": "node scripts/generate-seed.mjs",
-"test":  "node scripts/check-imports.mjs && node scripts/test-schema.mjs && node scripts/test-access-rule.mjs && node scripts/test-timeago.mjs && node scripts/test-password-policy.mjs && node scripts/test-error-boundary.mjs && node scripts/smoke.mjs && node scripts/smoke-staff.mjs"
+    "test": "node scripts/check-imports.mjs && node scripts/test-schema.mjs && node scripts/test-access-rule.mjs && node scripts/test-tmdb-lookup.mjs && node scripts/test-genres-normalisation.mjs && node scripts/test-timeago.mjs && node scripts/test-password-policy.mjs && node scripts/test-error-boundary.mjs && node scripts/smoke.mjs && node scripts/smoke-staff.mjs"
   },
   "dependencies": {
     "hls.js": "^1.5.20",
