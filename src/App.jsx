@@ -7,6 +7,7 @@ import { CatalogProvider } from './context/CatalogContext';
 import { NotificationsProvider } from './context/NotificationsContext';
 import Home from './pages/Home';
 import Browse from './pages/Browse';
+import Category from './pages/Category';
 import Search from './pages/Search';
 import Watchlist from './pages/Watchlist';
 import TitleDetail from './pages/TitleDetail';
@@ -40,6 +41,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Home />} />
             <Route path="/browse" element={<Browse />} />
+            <Route path="/category/:type" element={<Category />} />
               <Route path="/search" element={<Search />} />
               <Route path="/watchlist" element={<Watchlist />} />
               <Route path="/auth" element={<AuthPage />} />

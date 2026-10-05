@@ -37,7 +37,7 @@ export default function Search() {
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search titles, genres or synopses…"
+          placeholder="Search titles, genres or synopsesâ€¦"
           aria-label="Search titles"
           className="flex-1 rounded-lg bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
         />
@@ -51,7 +51,7 @@ export default function Search() {
           <option value="movie">Movies</option>
           <option value="series">Series</option>
           <option value="anime">Anime</option>
-          <option value="ai">AI Generated</option>
+          <option value="ai">AI Movie</option>
         </select>
       </div>
 

@@ -3,6 +3,7 @@ import { NavLink, Link } from 'react-router-dom';
 import { useAuth, preferredName } from '../context/AuthContext';
 import NotificationBell from './NotificationBell';
 import SignOutDialog from './SignOutDialog';
+import { TITLE_TYPES, typePath } from '../lib/titleTypes';
 
 const STAFF = ['admin', 'moderator'];
 
@@ -145,9 +146,29 @@ export function TopNav() {
         </nav>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Categories, so they are one click from anywhere rather than only
+              reachable through the Browse page. */}
+          <nav
+            aria-label="Categories"
+            className="hidden items-center gap-1 lg:flex"
+          >
+            {TITLE_TYPES.map((t) => (
+              <NavLink
+                key={t.value}
+                to={typePath(t.value)}
+                className={({ isActive }) =>
+                  `rounded-lg px-2.5 py-1.5 text-sm font-medium transition ${
+                    isActive ? 'bg-surface-2 text-text' : 'text-muted hover:text-text'
+                  }`
+                }
+              >
+                {t.label}
+              </NavLink>
+            ))}
+          </nav>
           <Link
             to="/search"
-            className="hidden rounded-lg bg-surface px-3 py-1.5 text-sm text-muted transition hover:text-text sm:block"
+            className="hidden rounded-lg bg-surface px-3 py-1.5 text-sm text-muted transition hover:text-text xl:block"
           >
             Search titles…
           </Link>

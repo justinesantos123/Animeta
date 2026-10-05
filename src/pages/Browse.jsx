@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
-import { TITLE_TYPES, titleTypeLabel, isEpisodic } from '../lib/titleTypes';
+import { TITLE_TYPES, titleTypeLabel, typePath } from '../lib/titleTypes';
 
 /**
  * The full catalog, grouped by type.
@@ -86,19 +86,34 @@ export default function Browse() {
       ) : (
         <div className="mt-8 space-y-12">
           {shown.map((section) => (
-            <section key={section.value} id={`type-${section.value}`} aria-labelledby={`h-${section.value}`}>
-              <div className="mb-4 flex items-baseline gap-3">
+            <section
+              key={section.value}
+              id={`type-${section.value}`}
+              aria-labelledby={`h-${section.value}`}
+            >
+              <div className="mb-4 flex flex-wrap items-baseline gap-3">
                 <h2 id={`h-${section.value}`} className="text-lg font-bold">
-                  {titleTypeLabel(section.value)}
+                  <Link
+                    to={typePath(section.value)}
+                    className="hover:text-accent focus-visible:text-accent"
+                  >
+                    {titleTypeLabel(section.value)}
+                  </Link>
                 </h2>
                 <span className="text-xs text-muted">
                   {section.items.length} {section.items.length === 1 ? 'title' : 'titles'}
                 </span>
-                {isEpisodic(section.value) && (
+                {section.gated && (
                   <span className="rounded bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent">
                     Sign-in to watch
                   </span>
                 )}
+                <Link
+                  to={typePath(section.value)}
+                  className="ml-auto text-xs text-accent hover:underline"
+                >
+                  See all {titleTypeLabel(section.value)}
+                </Link>
               </div>
 
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">

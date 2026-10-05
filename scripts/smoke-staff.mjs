@@ -201,6 +201,7 @@ for (const role of ['admin', 'moderator']) {
 total += await checkGreeting();
 total += await checkPlaybackGate();
 total += await checkBrowseListing();
+total += await checkCategoryPages();
 
 // Drives a real sign-in through the UI and asserts the greeting appears.
 async function checkGreeting() {
@@ -508,7 +509,9 @@ async function checkBrowseListing() {
     return 1;
   }
 
-  const expected = ['Series', 'Anime', 'Movies', 'AI Generated'];
+  // Labels come from TITLE_TYPES in src/lib/titleTypes.js, so the rename of
+// 'ai' to "AI Movie" is picked up here rather than duplicated.
+const expected = ['Series', 'Anime', 'Movies', 'AI Movie'];
   const missing = expected.filter((label) => !headings.includes(label));
   if (missing.length) {
     console.log(`FAIL browse  missing type sections: ${missing.join(', ')} (saw ${headings.join(', ')})`);
@@ -526,7 +529,7 @@ async function checkBrowseListing() {
     const n = Number((chip.match(/(\d+)\s*$/) || [])[1]);
     return Number.isNaN(n) ? null : n;
   };
-  const wanted = { Series: 1, Anime: 2, Movies: 1, 'AI Generated': 1 };
+  const wanted = { Series: 1, Anime: 2, Movies: 1, 'AI Movie': 1 };
   const bad = Object.entries(wanted).filter(([label, want]) => countFor(label) !== want);
   if (bad.length) {
     console.log(
@@ -541,9 +544,157 @@ async function checkBrowseListing() {
   return 0;
 }
 
+/**
+ * Each category page must list exactly its own titles, be reachable signed out,
+ * and an unknown type must 404 rather than render an empty grid.
+ */
+async function checkCategoryPages() {
+  const CATALOG = [
+    { slug: 'a-movie', type: 'movie', title: 'A Movie', genres: ['Drama'], rating: 8 },
+    { slug: 'b-anime', type: 'anime', title: 'B Anime', genres: ['Action'], rating: 9 },
+    { slug: 'c-series', type: 'series', title: 'C Series', genres: ['Sci-Fi'], rating: 7 },
+    { slug: 'd-ai', type: 'ai', title: 'D AI Movie', genres: ['Experimental'], rating: 8.5 },
+    { slug: 'e-anime', type: 'anime', title: 'E Anime', genres: ['Drama'], rating: 7.5 },
+    { slug: 'f-ai', type: 'ai', title: 'F AI Movie', genres: ['Drama'], rating: 6 },
+  ];
+
+  async function open(route) {
+    const errors = [];
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.on('jsdomError', (e) => errors.push(e.message));
+    virtualConsole.on('error', (...a) => errors.push(a.map(String).join(' ')));
+
+    const dom = new JSDOM(html, {
+      url: `https://animeta.test${route}`,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      virtualConsole,
+    });
+    const { window } = dom;
+
+    const json = (body) => ({ ok: true, status: 200, json: async () => body });
+
+    window.fetch = async (input) => {
+      const path = String(typeof input === 'string' ? input : input?.url || '')
+        .replace(/^https:\/\/animeta\.test/, '')
+        .split('?')[0];
+      if (path === '/api/auth/me') return json({ user: null });
+      if (path === '/api/titles') {
+        return json({
+          titles: CATALOG.map((t) => ({
+            id: t.slug, ...t, synopsis: 'x', releaseDate: '2026-01-01',
+            runtime: '24m', posterUrl: '', backdropUrl: '', videoUrl: null,
+            subtitlesUrl: null, featured: false,
+          })),
+        });
+      }
+      if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
+      if (path === '/api/settings') {
+        return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+      }
+      return json({});
+    };
+
+    if (!window.matchMedia) {
+      window.matchMedia = () => ({
+        matches: false, addListener() {}, removeListener() {},
+        addEventListener() {}, removeEventListener() {},
+      });
+    }
+    window.scrollTo = () => {};
+
+    try {
+      window.eval(bundle);
+    } catch (e) {
+      errors.push(e.message);
+    }
+    await new Promise((r) => setTimeout(r, 550));
+
+    const doc = window.document;
+    const result = {
+      errors,
+      heading: doc.querySelector('main h1')?.textContent.trim(),
+      // Card titles are the <h3> inside each poster link.
+      cardTitles: [...doc.querySelectorAll('a[href^="/title/"] h3')].map((h) => h.textContent.trim()),
+      isNotFound: /wrong turn/i.test(doc.body.textContent),
+      crumbs: [...doc.querySelectorAll('nav[aria-label="Breadcrumb"] li')].map(
+        (li) => li.textContent.trim(),
+      ),
+      current: doc.querySelector('nav[aria-label="Categories"] a[aria-current="page"]')
+        ?.textContent.replace(/\s+/g, ' ').trim(),
+    };
+    window.close();
+    return result;
+  }
+
+  let failed = 0;
+
+  const EXPECTED = [
+    { type: 'anime', label: 'Anime', slugs: ['B Anime', 'E Anime'] },
+    { type: 'movie', label: 'Movies', slugs: ['A Movie'] },
+    { type: 'series', label: 'Series', slugs: ['C Series'] },
+    { type: 'ai', label: 'AI Movie', slugs: ['D AI Movie', 'F AI Movie'] },
+  ];
+
+  for (const { type, label, slugs } of EXPECTED) {
+    const r = await open(`/category/${type}`);
+
+    if (r.errors.length) {
+      failed++;
+      console.log(`FAIL category  /category/${type} errored: ${r.errors[0].split('\n')[0]}`);
+      continue;
+    }
+    if (r.isNotFound) {
+      failed++;
+      console.log(`FAIL category  /category/${type} rendered the 404 page`);
+      continue;
+    }
+    if (r.heading !== label) {
+      failed++;
+      console.log(`FAIL category  /category/${type} heading was "${r.heading}", expected "${label}"`);
+      continue;
+    }
+    const got = [...r.cardTitles].sort();
+    const want = [...slugs].sort();
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      failed++;
+      console.log(
+        `FAIL category  /category/${type} listed [${got.join(', ')}], expected [${want.join(', ')}]`,
+      );
+      continue;
+    }
+    console.log(`ok   /category/${type} lists only its own ${want.length} title(s) as "${label}"`);
+  }
+
+  // Unknown type must 404, not render a plausible-looking empty category.
+  {
+    const r = await open('/category/nonsense');
+    if (!r.isNotFound) {
+      failed++;
+      console.log('FAIL category  /category/nonsense did not 404');
+    } else {
+      console.log('ok   /category/nonsense falls through to the 404 page');
+    }
+  }
+
+  // Breadcrumb must point back at Browse.
+  {
+    const r = await open('/category/anime');
+    const joined = (r.crumbs || []).join(' ');
+    if (!/Browse/.test(joined)) {
+      failed++;
+      console.log(`FAIL category  breadcrumb missing Browse: ${JSON.stringify(r.crumbs)}`);
+    } else {
+      console.log('ok   category breadcrumb links back to Browse');
+    }
+  }
+
+  return failed;
+}
+
 console.log(
   total === 0
-    ? '\nAll staff tabs, greeting, playback gate and browse listing rendered.'
+    ? '\nAll staff tabs, greeting, playback gate, browse and category pages rendered.'
     : `\n${total} check(s) failed.`,
 );
 process.exit(total === 0 ? 0 : 1);
