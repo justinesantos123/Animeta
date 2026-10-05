@@ -8,7 +8,7 @@ import PlaybackGate from '../components/PlaybackGate';
 import { titleTypeLabel, isEpisodic } from '../lib/titleTypes';
 import TitleCard from '../components/TitleCard';
 import EmbedPlayer from '../components/EmbedPlayer';
-import SponsoredSlot from '../components/SponsoredSlot';
+import PreRollAd from '../components/PreRollAd';
 import { isSponsored } from '../lib/titleTypes';
 
 export default function TitleDetail() {
@@ -20,6 +20,16 @@ export default function TitleDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [chosenId, setChosenId] = useState(null);
+
+  // Pre-roll state. An advert plays in place of the film and is replaced by it,
+  // so the visitor never has to click a second play button.
+  const [preRollDone, setPreRollDone] = useState(false);
+
+  // Reset per title: a new film means a new chance at a pre-roll, and a
+  // different title means the cap should be re-evaluated from scratch.
+  useEffect(() => {
+    setPreRollDone(false);
+  }, [slug]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,10 +116,26 @@ export default function TitleDetail() {
     );
   }
 
+  if (error || !data?.title) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-24 text-center">
+        <h1 className="text-xl font-bold">Title not found</h1>
+        <Link to="/browse" className="mt-4 inline-block text-sm text-accent hover:underline">
+          Browse the catalog
+        </Link>
+      </div>
+    );
+  }
+
   const item = data.title;
   const saved = has(item.slug);
   const episode = chosenEpisode;
   const sponsored = isSponsored(item.type);
+
+  // An advert must never pre-roll an advert, and pre-rolling a page with
+  // nothing to play would be an advert in front of nothing.
+  const preRollEligible =
+    !sponsored && Boolean(data.title.videoUrl || data.title.streamUrl || data.title.embedId);
 
   // A locked episode that was picked shows the gate instead of playing.
   const gatedEpisode = episode?.locked ? episode : null;
@@ -202,45 +228,58 @@ export default function TitleDetail() {
       </section>
 
       <div className="mx-auto max-w-5xl space-y-7 px-4">
-        {gatedEpisode ? (
-          <PlaybackGate
-            title={item.title}
-            episodeTitle={gatedEpisode.title}
-            firstEpisodeIsFree={Boolean(freeEpisode)}
-          />
-        ) : nothingPlayable ? (
-          <PlaybackGate title={item.title} firstEpisodeIsFree={false} />
-        ) : embedKind ? (
-          // Keyed like the file player so switching episodes swaps the frame
-          // rather than trying to reuse one that was built for a different id.
-          <EmbedPlayer
-            key={playableEpisode ? `embed-${playableEpisode.id}` : 'embed-title'}
-            provider={embedProvider}
-            videoId={embedId}
-            title={nowPlaying}
-          />
-        ) : streamUrl ? (
-          <VideoPlayer
-            key={playableEpisode ? playableEpisode.id : 'title'}
-            src={streamUrl}
-            // Decides whether the browser can play this directly or hls.js has to
-            // be involved. A streamed upload has no file extension, so the kind is
-            // the only way to tell it apart from a real .m3u8.
-            kind={source.videoKind}
-            poster={item.backdropUrl || item.posterUrl}
-            subtitlesUrl={subtitleUrl}
-            title={nowPlaying}
-            onProgress={onProgress}
+        {/* While an advert is due, the film player is NOT mounted. Mounting both
+            means two <video> elements at once: the film can be seen behind the
+            advert, and if it has autoplay both play, so audio doubles up. The
+            player is swapped in only once the advert is finished or skipped. */}
+        {!preRollDone && preRollEligible ? (
+          <PreRollAd
+            key={slug}
+            titleSlug={item.slug}
+            onDone={() => setPreRollDone(true)}
+            onFail={() => setPreRollDone(true)}
           />
         ) : (
-          <div className="flex aspect-video w-full items-center justify-center rounded-[var(--radius-card)] bg-[var(--color-surface)] text-sm text-[var(--color-muted)] ring-1 ring-[var(--color-line)]">
-            {/* Distinguished from "not published yet": the upload was recorded but the file is
-              gone from storage, which staff need to see rather than have it look
-              like a typo. */}
-            {item.missingVideo
-              ? 'The video for this title is no longer available.'
-              : 'No video available for this title yet.'}
-          </div>
+          <>
+            {gatedEpisode ? (
+              <PlaybackGate
+                title={item.title}
+                episodeTitle={gatedEpisode.title}
+                firstEpisodeIsFree={Boolean(freeEpisode)}
+              />
+            ) : nothingPlayable ? (
+              <PlaybackGate title={item.title} firstEpisodeIsFree={false} />
+            ) : embedKind ? (
+              <EmbedPlayer
+                key={playableEpisode ? `embed-${playableEpisode.id}` : 'embed-title'}
+                provider={embedProvider}
+                videoId={embedId}
+                title={nowPlaying}
+              />
+            ) : streamUrl ? (
+              <VideoPlayer
+                key={playableEpisode ? playableEpisode.id : 'title'}
+                src={streamUrl}
+                // Decides whether the browser can play this directly or hls.js has
+                // to be involved. A streamed upload has no file extension, so the
+                // kind is the only way to tell it apart from a real .m3u8.
+                kind={source.videoKind}
+                poster={item.backdropUrl || item.posterUrl}
+                subtitlesUrl={subtitleUrl}
+                title={nowPlaying}
+                onProgress={onProgress}
+              />
+            ) : (
+              <div className="flex aspect-video w-full items-center justify-center rounded-[var(--radius-card)] bg-[var(--color-surface)] px-6 text-center text-sm text-[var(--color-muted)] ring-1 ring-[var(--color-line)]">
+                {/* Distinguished from "not published yet": the upload was recorded
+                    but the file is gone from storage, which staff need to see
+                    rather than have it look like a typo. */}
+                {item.missingVideo
+                  ? 'The video for this title is no longer available.'
+                  : 'No video available for this title yet.'}
+              </div>
+            )}
+          </>
         )}
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -398,16 +437,6 @@ export default function TitleDetail() {
             ))}
           </div>
           </section>
-
-          {/* Below the player and after "more like this", never inside either.
-              Recommending an advert as related content would be a false claim
-              about taste, so related is filtered to editorial types and the
-              advert gets its own labelled block. */}
-          <div className="mt-10">
-            <SponsoredSlot
-              items={titles.filter((t) => isSponsored(t.type) && t.slug !== item.slug)}
-            />
-          </div>
         </div>
       </div>
     );

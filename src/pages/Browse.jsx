@@ -2,8 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
-import SponsoredSlot from '../components/SponsoredSlot';
-import { TITLE_TYPES, titleTypeLabel, typePath } from '../lib/titleTypes';
+import { TITLE_TYPES, titleTypeLabel, typePath, isSponsored } from '../lib/titleTypes';
 
 /**
  * The full catalog, grouped by category.
@@ -17,7 +16,10 @@ export default function Browse() {
 
   const sections = useMemo(
     () =>
-      TITLE_TYPES.map((meta) => ({
+      // Adverts are filtered out here as well as in the API. The API is the real
+      // gate, but a category chip and a section heading for something the page
+      // will never show would be a visible bug.
+      TITLE_TYPES.filter((meta) => !isSponsored(meta.value)).map((meta) => ({
         ...meta,
         items: titles
           .filter((t) => t.type === meta.value)
@@ -104,18 +106,6 @@ export default function Browse() {
               </div>
             </section>
           ))}
-
-          {/* After the organic sections, not among them, and only when browsing
-              the whole catalog: someone filtering to a category has asked for
-              that category and nothing else. */}
-          {type === 'all' && (
-            <div className="mt-10">
-              <SponsoredSlot
-                items={sections.find((s) => s.value === 'ads')?.items ?? []}
-                heading="Sponsored on Animeta"
-              />
-            </div>
-          )}
         </div>
       )}
 

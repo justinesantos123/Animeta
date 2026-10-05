@@ -624,6 +624,16 @@ const [upload, setUpload] = useState(null);
                       </div>
 
                       <span className="flex shrink-0 gap-1.5">
+                        {/* An advert has no public page any more, so this is the only
+                            way to watch one and confirm it plays. */}
+                        {t.type === 'ads' && (
+                          <Link
+                            to={`/title/${t.slug}`}
+                            className="rounded-[var(--radius-control)] bg-surface-2 px-2 py-1 text-xs text-[var(--color-muted)] transition hover:bg-[var(--color-surface-3)] hover:text-[var(--color-text)]"
+                          >
+                            Preview
+                          </Link>
+                        )}
                         <button
                           type="button"
                           onClick={() => startEdit(t)}

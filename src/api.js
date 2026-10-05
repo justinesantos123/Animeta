@@ -81,6 +81,8 @@ export const api = {
   // Uploads. The file goes up as a raw request body rather than JSON, so this
   // uses XMLHttpRequest directly: it is the only way to get upload progress.
   listMyUploads: () => request('/uploads'),
+  // The pre-roll pool. Public: a pre-roll plays to everyone.
+  listAds: () => request('/ads'),
   finaliseUpload: (id, meta) =>
     request(`/uploads/${encodeURIComponent(id)}/finalise`, { method: 'POST', body: meta }),
   // The poster frame the browser captured from the local file. Raw body, like

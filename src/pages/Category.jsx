@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
 import NotFound from './NotFound';
-import { TITLE_TYPES, titleTypeMeta, typePath } from '../lib/titleTypes';
+import { TITLE_TYPES, titleTypeMeta, typePath, isSponsored } from '../lib/titleTypes';
 
 /**
  * One page per catalog category: /category/anime, /category/movie,
@@ -33,7 +33,10 @@ export default function Category() {
     return map;
   }, [titles]);
 
-  if (!meta) return <NotFound />;
+  // An advert is not a browsable category. /category/ads is a 404 rather than an
+  // empty page: a route that exists and shows nothing implies the catalogue is
+  // simply empty, and invites people to keep requesting it.
+  if (!meta || isSponsored(type)) return <NotFound />;
 
   if (loading) {
     return (

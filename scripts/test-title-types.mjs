@@ -106,6 +106,47 @@ for (const t of VALUES) {
   check(`${t} has a sluggable path`, /^\/category\/[a-z]+$/.test(typePath(t)));
 }
 
+// --- Adverts must not be browsable -------------------------------------------
+// This is the whole point of the type: an advert is something that plays, not
+// something you browse to. Each of these is a surface that has to exclude it.
+import { readFileSync } from 'node:fs';
+
+const api = readFileSync(new URL('../worker/api.js', import.meta.url), 'utf8');
+
+const slice = (from, to) => api.slice(api.indexOf(from), api.indexOf(to));
+
+const listHandler = slice('async function handleListTitles', '// ---------------------------------------------------------------- titles');
+check('found the public listing', listHandler.length > 100, `${listHandler.length} chars`);
+check(
+  'the public listing excludes adverts in SQL',
+  /where\.push\(`type <> '\$\{AD_TYPE\}'`\)/.test(listHandler),
+);
+
+// A specific end marker: a generic rule separator also appears earlier in the
+// file, and slicing to it would silently produce an empty string and pass.
+const contHandler = slice(
+  'async function handleContinueWatching',
+  '// ------------------------------------------------- user management',
+);
+check('found continue watching', contHandler.length > 100, `${contHandler.length} chars`);
+check('continue watching excludes adverts in SQL', /t\.type <> \?/.test(contHandler) && /AD_TYPE/.test(contHandler));
+
+const startHandler = slice(
+  'async function handlePlaybackStart',
+  'async function handleContinueWatching',
+);
+check('found playback start', startHandler.length > 100, `${startHandler.length} chars`);
+check('playback progress is not recorded for an advert', /title\.type === AD_TYPE/.test(startHandler));
+
+// A category filter must not be a way back in.
+check('the category filter refuses the ads type', /type !== AD_TYPE/.test(listHandler));
+
+// The pre-roll pool is the one endpoint that may return adverts.
+const adsHandler = slice('async function handleListAds', 'async function handleGetSettings');
+check('there is a dedicated pre-roll endpoint', adsHandler.length > 100);
+check('it only returns the ads type', /WHERE type = \?/.test(adsHandler));
+check('it skips adverts with no playable video', /continue;/.test(adsHandler));
+
 console.log(
   failed === 0
     ? '\nTitle types behave as expected.'

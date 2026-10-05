@@ -209,6 +209,9 @@ function parseGenres(value) {
 
 const EMBED_PROVIDERS = ['youtube', 'vimeo'];
 
+/** The title type that marks a paid placement rather than catalog content. */
+const AD_TYPE = 'ads';
+
 /**
  * Works out how a video should be played, from whatever the client sent.
  *
@@ -807,7 +810,17 @@ async function handleListTitles(request, env, url) {
   const where = [];
   const binds = [];
 
-  if (type && TITLE_TYPE_VALUES.includes(type)) {
+  // Adverts are excluded from this endpoint unconditionally, including when
+  // someone passes ?type=ads.
+  //
+  // This is the single gate for Browse, the category pages, Search, and the new
+  // releases and highest rated rails, so excluding here rather than in the UI is
+  // what makes an advert genuinely unbrowsable. Filtering client-side would leave
+  // the rows in the response for anyone reading the JSON, and an advert is a paid
+  // placement, not catalog content.
+  where.push(`type <> '${AD_TYPE}'`);
+
+  if (type && TITLE_TYPE_VALUES.includes(type) && type !== AD_TYPE) {
     where.push('type = ?');
     binds.push(type);
   }
@@ -1264,12 +1277,18 @@ async function handlePlaybackStart(request, env) {
     return json({ error: 'Invalid JSON body' }, 400);
   }
 
-  const title = await env.DB.prepare('SELECT id FROM titles WHERE slug = ?')
-    .bind(String(body.slug ?? ''))
-    .first();
-  if (!title) return json({ error: 'Title not found' }, 404);
+    const title = await env.DB.prepare('SELECT id, type FROM titles WHERE slug = ?')
+      .bind(String(body.slug ?? ''))
+      .first();
+    if (!title) return json({ error: 'Title not found' }, 404);
 
-  const position = Number(body.position ?? 0);
+    // An advert is not something anybody chose to watch, so it must not become a
+    // "continue watching" row. Excluding at write time stops a pre-roll
+    // impression from ever appearing in the rail, rather than filtering it out
+    // later and leaving the record behind.
+    if (title.type === AD_TYPE) return json({ ok: true, skipped: true });
+
+    const position = Number(body.position ?? 0);
   if (!Number.isFinite(position) || position < 0) return json({ error: 'Invalid position' }, 400);
 
   await env.DB.prepare(
@@ -1290,13 +1309,16 @@ async function handleContinueWatching(request, env) {
   const user = await getUser(request, env);
   if (!user) return json({ error: 'Authentication required' }, 401);
 
-  const { results } = await env.DB.prepare(
-    `SELECT t.*, p.position, p.last_played_at FROM playback_records p
-     JOIN titles t ON t.id = p.title_id
-     WHERE p.user_id = ? ORDER BY p.last_played_at DESC LIMIT 10`,
-  )
-    .bind(user.id)
-    .all();
+    // Adverts excluded in SQL as well as at write time: rows written before the
+    // type existed, or by a direct database edit, would otherwise still surface.
+    const { results } = await env.DB.prepare(
+      `SELECT t.*, p.position, p.last_played_at FROM playback_records p
+       JOIN titles t ON t.id = p.title_id
+       WHERE p.user_id = ? AND t.type <> ?
+       ORDER BY p.last_played_at DESC LIMIT 10`,
+    )
+      .bind(user.id, AD_TYPE)
+      .all();
 
   return json({
     titles: results.map((r) => ({ ...shapeTitle(r), position: r.position })),
@@ -2533,6 +2555,59 @@ async function userRows(env, where) {
   return results;
 }
 
+/**
+ * GET /api/ads — the pre-roll pool.
+ *
+ * Public, because a pre-roll plays to everyone including signed-out visitors.
+ * Only fields the player needs are returned, and the stream path is the same
+ * gated route the catalog uses, so an advert with no playable upload is filtered
+ * out here rather than failing in the player's face.
+ *
+ * The pool is ordered by creation and the client picks, so adding a second
+ * advert is a matter of posting another one. There is no campaign, budget or
+ * impression tracking, deliberately: this is a slot that plays, not an ad server.
+ */
+async function handleListAds(request, env) {
+  if (!env.VIDEOS) return json({ ads: [] });
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, slug, title, upload_id, video_kind, embed_provider, embed_id
+     FROM titles
+     WHERE type = ? AND featured >= 0
+     ORDER BY created_at DESC
+     LIMIT 20`,
+  )
+    .bind(AD_TYPE)
+    .all();
+
+  const ads = [];
+  for (const row of results) {
+    if (row.video_kind === 'upload' && row.upload_id) {
+      const upload = await loadUpload(env, row.upload_id);
+      if (upload?.status !== 'ready') continue;
+      ads.push({
+        slug: row.slug,
+        title: row.title,
+        kind: 'upload',
+        src: videoStreamPath(row.upload_id),
+        // Not required for playback, but a zero-length ad would flash and vanish.
+        durationSecs: row.duration_secs ?? upload.duration_secs ?? null,
+      });
+    } else if (row.video_kind === 'embed' && row.embed_provider && row.embed_id) {
+      ads.push({
+        slug: row.slug,
+        title: row.title,
+        kind: 'embed',
+        provider: row.embed_provider,
+        videoId: row.embed_id,
+        durationSecs: row.duration_secs ?? null,
+      });
+    }
+  }
+
+  return json({ ads });
+}
+
 async function handleGetSettings(request, env) {
   const auth = await requireStaff(request, env);
   if (auth.error) return auth.error;
@@ -2864,6 +2939,12 @@ export async function handleApi(request, env, url) {
     if (seg[1] === 'playback') {
       if (seg[2] === 'start' && method === 'POST') return handlePlaybackStart(request, env);
       if (seg[2] === 'continue' && method === 'GET') return handleContinueWatching(request, env);
+    }
+
+    // Pre-roll pool. Public: a pre-roll plays to everyone, and a signed-out
+    // visitor is who most needs to see the advert that pays for the site.
+    if (seg[1] === 'ads' && seg.length === 2 && method === 'GET') {
+      return handleListAds(request, env);
     }
 
     if (seg[1] === 'settings') {
