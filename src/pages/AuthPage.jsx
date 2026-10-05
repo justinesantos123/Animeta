@@ -28,13 +28,22 @@ export default function AuthPage() {
       <div className="mx-auto max-w-md px-4 py-24 text-center">
         <h1 className="text-2xl font-bold">You&rsquo;re signed in</h1>
         <p className="mt-2 text-sm text-muted">{user.email}</p>
-        <button
-          type="button"
-          onClick={() => navigate(next, { replace: true })}
-          className="mt-6 rounded-lg bg-cta px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
-        >
-          Continue browsing
-        </button>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          {next !== '/' && (
+            <Link
+              to={next}
+              className="rounded-lg bg-cta px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
+            >
+              {next.startsWith('/title/') ? 'Back to the title' : 'Continue'}
+            </Link>
+          )}
+          <Link
+            to="/browse"
+            className="rounded-lg bg-surface px-5 py-2.5 text-sm font-semibold text-text ring-1 ring-white/10 transition hover:bg-surface-2"
+          >
+            Continue browsing
+          </Link>
+        </div>
       </div>
     );
   }
@@ -120,12 +129,17 @@ export default function AuthPage() {
               type="password"
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               required
-              minLength={mode === 'signup' ? 8 : undefined}
+              minLength={mode === 'signup' ? 10 : undefined}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className={inputClass}
-              placeholder={mode === 'signup' ? 'At least 8 characters' : '••••••••'}
+              placeholder={mode === 'signup' ? 'At least 10 characters' : '••••••••'}
             />
+            {mode === 'signup' && (
+              <p className="mt-1 text-[11px] text-muted">
+                At least 10 characters, with a lowercase letter, a capital letter and a number.
+              </p>
+            )}
           </div>
 
           {error && (

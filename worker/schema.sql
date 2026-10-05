@@ -11,8 +11,10 @@ CREATE TABLE IF NOT EXISTS users (
   salt          TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',
   display_name  TEXT,
-  -- Public handle, chosen at signup and shown in the UI. Unique, case-insensitive.
-  username      TEXT,
+  -- Public handle, chosen at signup and shown in the UI. NOT NULL: every account
+  -- has one. Uniqueness is case-insensitive via idx_users_username on
+  -- lower(username), since SQLite's UNIQUE is case-sensitive.
+  username      TEXT NOT NULL,
   last_seen_at  TEXT,
   -- Short non-reversible code derived from the password. Lets an owner confirm
   -- "is this still the password I set?" without ever storing or revealing it.
@@ -22,6 +24,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
+-- Case-insensitive uniqueness, which a plain UNIQUE on the column would not give.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(lower(username));
 
 CREATE TABLE IF NOT EXISTS titles (
   id            TEXT PRIMARY KEY,
@@ -153,6 +157,14 @@ CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications(user_id, read_at);
 -- One row per user per UTC day they were active. Lets us measure gaps between
 -- visits, which is what identifies someone returning after a long absence.
 -- A current-state column like last_seen_at cannot show a gap once it is gone.
+-- Fixed-window counters for credential endpoints. Also created lazily by the
+-- Worker; declared here so a fresh database matches migrations/0003.
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+  bucket       TEXT NOT NULL,
+  hits         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket)
+);
+
 CREATE TABLE IF NOT EXISTS user_activity_days (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   day     TEXT NOT NULL,

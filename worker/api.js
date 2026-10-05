@@ -14,6 +14,7 @@ import {
   COOKIE_NAME,
 } from './crypto.js';
 import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
+import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -251,6 +252,19 @@ function validPassword(pw) {
 // ---------------------------------------------------------------- routes
 
 async function handleSignup(request, env) {
+  // Counted before any parsing so a flood of malformed bodies is throttled too.
+  const signupLimit = await hitRateLimit(env, request, 'signup', {
+    limit: 5,
+    windowSeconds: 600,
+  });
+  if (!signupLimit.allowed) {
+    return json(
+      { error: 'Too many accounts created from here. Try again later.' },
+      429,
+      { 'retry-after': String(signupLimit.retryAfter) },
+    );
+  }
+
   let body;
   try {
     body = await request.json();
@@ -263,6 +277,10 @@ async function handleSignup(request, env) {
 
   if (!EMAIL_RE.test(email)) return json({ error: 'Enter a valid email address' }, 400);
   if (!validPassword(password)) return json({ error: 'Password must be at least 8 characters' }, 400);
+
+  // Length alone was the only check, so "aaaaaaaa" was acceptable.
+  const weak = passwordProblem(password);
+  if (weak) return json({ error: weak }, 400);
 
   // Username is required at signup.
   const nameCheck = validateUsername(body.username);
@@ -309,6 +327,17 @@ async function handleSignup(request, env) {
 }
 
 async function handleLogin(request, env) {
+  // Two tiers: a wide one per IP, a tight one per account so one targeted
+  // account cannot be ground down from a single machine.
+  const perIp = await hitRateLimit(env, request, 'login', { limit: 20, windowSeconds: 60 });
+  if (!perIp.allowed) {
+    return json(
+      { error: 'Too many sign-in attempts. Wait a minute and try again.' },
+      429,
+      { 'retry-after': String(perIp.retryAfter) },
+    );
+  }
+
   let body;
   try {
     body = await request.json();
@@ -325,11 +354,35 @@ async function handleLogin(request, env) {
     .bind(email)
     .first();
 
-  // Same message either way so the endpoint can't enumerate registered emails.
-  if (!row) return json({ error: 'Invalid email or password' }, 401);
-  if (!(await verifyPassword(password, row.salt, row.password_hash))) {
-    return json({ error: 'Invalid email or password' }, 401);
+  // The account tier keys on the email rather than the row id, so it runs and
+  // costs the same whether or not the account exists. Keying on the id meant
+  // this lookup was skipped for unknown addresses, which left a measurable
+  // timing difference between "registered" and "not registered".
+  const emailKey = await sha256Hex(email);
+  const perAccount = await hitRateLimit(env, request, `login:acct:${emailKey}`, {
+    limit: 6,
+    windowSeconds: 300,
+  });
+  if (!perAccount.allowed) {
+    return json(
+      { error: 'Too many attempts for this account. Try again shortly.' },
+      429,
+      { 'retry-after': String(perAccount.retryAfter) },
+    );
   }
+  // Same message either way so the endpoint can't enumerate registered emails.
+  //
+  // When there is no such account we still run a hash against a fixed decoy.
+  // Returning early instead made a wrong password cost ~100ms of PBKDF2 while
+  // an unknown email cost ~1ms, which revealed which addresses are registered.
+  const ok = row
+    ? await verifyPassword(password, row.salt, row.password_hash)
+    : (await verifyPassword(password, DECOY_SALT_VALUE, await decoyHash()), false);
+
+  if (!ok) return json({ error: 'Invalid email or password' }, 401);
+
+  // One typo should not cost the user their whole window.
+  await clearRateLimit(env, request, `login:acct:${emailKey}`);
 
   const token = await signToken({ sub: row.id, role: row.role }, env.SESSION_SECRET);
   return json(
@@ -898,11 +951,17 @@ async function handleCreateUser(request, env) {
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return json({ error: 'An account with that email already exists' }, 409);
 
-  // Generate a strong password unless the admin supplied one.
+// Generate a strong password unless the admin supplied one.
   const supplied = typeof body.password === 'string' && body.password.length > 0;
   const password = supplied ? String(body.password) : generatePassword(16);
   if (!validPassword(password)) {
     return json({ error: 'Password must be at least 8 characters' }, 400);
+  }
+  if (supplied) {
+    // Only check what a human typed: generatePassword already produces something
+    // strong, and running it through the policy would reject its own output.
+    const weak = passwordProblem(password);
+    if (weak) return json({ error: `That password is too weak: ${weak.toLowerCase()}` }, 400);
   }
 
   const roles = ['user', 'moderator', 'admin'];
@@ -1045,6 +1104,20 @@ async function logAdminAction(env, adminId, action, targetId, detail) {
 // ----------------------------------------------- self-service password reset
 
 async function handleRequestReset(request, env) {
+  // Reset mails are a cheap way to spam staff notifications, so this is
+  // throttled per IP before anything else happens.
+  const limit = await hitRateLimit(env, request, 'reset-request', {
+    limit: 5,
+    windowSeconds: 900,
+  });
+  if (!limit.allowed) {
+    return json(
+      { ok: true, message: 'If that account exists, a reset link is on its way.' },
+      429,
+      { 'retry-after': String(limit.retryAfter) },
+    );
+  }
+
   let body;
   try {
     body = await request.json();
@@ -1655,6 +1728,36 @@ async function handleUpdateProfile(request, env) {
     .run();
 
   return json({ user: { id: user.id, email: user.email, username, displayName, role: user.role } });
+}
+
+/**
+ * Stable short digest, used to key a rate limit bucket by email without storing
+ * the address itself in the rate limit table.
+ */
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .slice(0, 8)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * A hash and salt no account uses, for spending comparable CPU time on a login
+ * for an unknown email. Generated once with the same PBKDF2 settings, so the
+ * work matches a real verification closely enough to level the timings.
+ */
+const DECOY_SALT_VALUE = 'animeta-timing-equalizer-v1';
+
+// Resolved once per isolate rather than at module scope: top-level await in a
+// Worker module blocks startup, and one 100k-iteration hash on every cold start
+// is not worth paying for a fallback path.
+let decoyHashPromise = null;
+function decoyHash() {
+  if (!decoyHashPromise) {
+    decoyHashPromise = hashPassword('animeta-not-a-real-password', DECOY_SALT_VALUE);
+  }
+  return decoyHashPromise;
 }
 
 // ---------------------------------------------------------------- router
