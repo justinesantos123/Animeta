@@ -28,6 +28,15 @@ function check(label, ok, detail = '') {
   if (!ok) failed++;
 }
 
+// Client files read by the checks below, all declared up front so the order of
+// the checks does not matter.
+const adminJsx = readFileSync(new URL('../src/pages/Admin.jsx', import.meta.url), 'utf8');
+const appJsx = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const routeMemory = readFileSync(
+  new URL('../src/components/RouteMemory.jsx', import.meta.url),
+  'utf8',
+);
+
 // ------------------------------------------------- username uniqueness
 //
 // The unique index covers every row. A "is this name taken" check that filters on
@@ -337,6 +346,107 @@ check('it lets go when the reader scrolls up', /el\.clientHeight < 40/.test(pane
 check('the list is hidden while a ticket is open on mobile', /selected \? 'hidden lg:block/.test(panel));
 check('there is a way back to the list on mobile', /All tickets/.test(panel) && /lg:hidden/.test(panel));
 check('the mobile back control is hidden on desktop', /lg:inline/.test(panel));
+
+// ------------------------------------------------------- who may chat
+//
+// The whole point of accepting a ticket is that it then has one owner. An admin
+// taking over has to stop moderators replying underneath them, and a closed
+// ticket has to stay closed until somebody reopens it -- a member used to be
+// able to undo a resolution just by continuing to type.
+
+check(
+  'acceptance decides who may chat',
+  /function mayReply\(user, side, ticket\)/.test(api),
+);
+{
+  const body = api.slice(
+    api.indexOf('function mayReply'),
+    api.indexOf('/** Why a member cannot chat'),
+  );
+  check('an unaccepted ticket is open to any staff with the grant', /if \(!ticket\.accepted_by\) return true;/.test(body));
+  check('the acceptor may always reply', /ticket\.accepted_by === user\.id/.test(body));
+  check('an admin may always reply', /user\.role === 'admin'/.test(body));
+}
+check(
+  'a member is limited by ownership, not by acceptance',
+  /if \(side !== 'staff'\) return true;/.test(api),
+);
+check(
+  'a closed ticket blocks chat',
+  /if \(ticket\.status === 'closed'\)/.test(api),
+);
+check(
+  'the reason travels with the refusal',
+  /chatBlockedReason: chatBlockReason\(user, side, ticket\)/.test(api),
+);
+check(
+  'the server refuses rather than trusting the client',
+  /if \(blocked\) \{[\s\S]{0,120}canReply: false/.test(api),
+);
+check(
+  'replying no longer reopens as a side effect',
+  // No `status = 'open'` in the reply handler's UPDATE at all.
+  !/UPDATE tickets SET message_count[\s\S]{0,200}status = 'open'/.test(api) &&
+    /UPDATE tickets SET message_count = message_count \+ 1,\s*\n\s*last_message_at = datetime\('now'\)/.test(api),
+);
+
+// ------------------------------------------------------ resolving + reopening
+check(
+  'resolving is any holder of the tickets grant, not admin only',
+  /async function handleCloseTicket[\s\S]{0,300}requirePermission\(request, env, 'tickets'\)/.test(api),
+);
+check(
+  'the console no longer gates resolving on being an admin',
+  !/canClose=\{isAdmin\}/.test(adminJsx),
+);
+check('the console gates it on the tickets grant', /canManage=\{granted\.has\('tickets'\)\}/.test(adminJsx));
+check(
+  'a member cannot reopen directly',
+  /handleReopenTicket[\s\S]{0,200}requirePermission\(request, env, 'tickets'\)/.test(api),
+);
+check(
+  'a member asking is recorded rather than applied',
+  /reopen_requested_at = datetime\('now'\), reopen_requested_by = \?/.test(api),
+);
+check(
+  'staff reopening clears the pending request',
+  /status = 'open', closed_at = NULL, closed_by = NULL,\s*\n\s*reopen_requested_at = NULL/.test(api),
+);
+check(
+  'a reopen request only applies to a closed ticket',
+  /if \(ticket\.status !== 'closed'\) \{[\s\S]{0,60}already open/.test(api),
+);
+check(
+  'the member is told when staff reopen it',
+  /Ticket reopened/.test(api),
+);
+check('the reopen is audited', /'ticket\.reopen'/.test(api));
+
+// ------------------------------------------------------- route persistence
+check('a member ticket is a route', /path="\/support\/:ticketId"/.test(appJsx));
+check('the panel reads its ticket from the URL', /ticketId = null/.test(panel) && /api\s*\n\s*\.getTicket\(ticketId\)/.test(panel));
+check('the console tab is in the URL', /tabParam = params\.get\('tab'\)/.test(adminJsx));
+check('the console ticket is in the URL', /params\.get\('ticket'\)/.test(adminJsx));
+check(
+  'a refresh puts the reader back',
+  /pathname !== '\/'/.test(routeMemory),
+);
+check(
+  'the restore is scoped, not general navigation',
+  /isRestorable/.test(routeMemory) && /\/support/.test(routeMemory) && /kaedeentrans/.test(routeMemory),
+);
+check(
+  'and it expires',
+  /MAX_AGE_MS/.test(routeMemory) && /30 \* 60 \* 1000/.test(routeMemory),
+);
+// The staff console keeps the open tab and ticket in the query string, so
+// storing the pathname alone brought back the console and dropped the
+// conversation. Caught in the browser, after the first version shipped.
+check(
+  'the saved place includes the query string',
+  /\$\{location\.pathname\}\$\{location\.search\}/.test(routeMemory),
+);
+check('and it is restored whole', /navigate\(saved, \{ replace: true \}\)/.test(routeMemory));
 
 check('staff are notified of a new ticket',
   /kind: 'ticket'/.test(api) && /userIds: staffRecipients/.test(api),

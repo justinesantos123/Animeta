@@ -1,22 +1,27 @@
 import { useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import TicketsPanel from '../components/TicketsPanel';
 
 /**
  * A member's support tickets.
  *
- * Reachable from the user menu. Staff use the Tickets tab in the staff console
- * instead, because they need the requester's address alongside each ticket, which
- * has no place on a page a member can reach.
+ * The open ticket lives in the URL (/support/:ticketId) rather than in component
+ * state, so refreshing lands back in the conversation instead of the list. A
+ * reload on a route that only exists in memory loses the place you were.
+ *
+ * Staff use the Tickets tab in the staff console instead, because they need the
+ * requester's address alongside each ticket, which has no place on a page a member
+ * can reach.
  */
 export default function Support() {
   const { user, ready } = useAuth();
   const navigate = useNavigate();
+  const { ticketId } = useParams();
 
   useEffect(() => {
-    if (ready && !user) navigate('/auth?next=/support', { replace: true });
-  }, [ready, user, navigate]);
+    if (ready && !user) navigate(`/auth?next=${encodeURIComponent(`/support/${ticketId ?? ''}`)}`.replace(/\/$/, ''), { replace: true });
+  }, [ready, user, navigate, ticketId]);
 
   if (!ready || !user) {
     return (
@@ -35,7 +40,11 @@ export default function Support() {
       </p>
 
       <div className="mt-6">
-        <TicketsPanel mode="member" />
+        <TicketsPanel
+          mode="member"
+          ticketId={ticketId ?? null}
+          onSelect={(id) => navigate(id ? `/support/${id}` : '/support', { replace: false })}
+        />
       </div>
 
       <p className="mt-8 text-xs text-muted">

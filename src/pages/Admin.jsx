@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import UserAdmin from './UserAdmin';
 import AdminDashboard from '../components/AdminDashboard';
@@ -40,7 +40,43 @@ export default function Admin() {
   const { user, ready } = useAuth();
   const navigate = useNavigate();
   const { refresh: refreshNotifications } = useNotifications();
-  const [tab, setTab] = useState('dashboard');
+
+  // The tab and the open ticket both live in the URL. Refreshing the console
+  // keeps you where you were instead of dropping you on the dashboard, which is
+  // the thing that made a conversation in progress feel unsafe to reload.
+  const [params, setParams] = useSearchParams();
+  const tabParam = params.get('tab');
+  const [tab, setTab] = useState(tabParam || 'dashboard');
+  const [ticketId, setTicketId] = useState(params.get('ticket') || null);
+
+  // A tab the viewer cannot open must not be left selected by a stale link.
+  const chooseTab = (id) => {
+    setTab(id);
+    const next = new URLSearchParams(params);
+    next.set('tab', id);
+    // Switching tab clears the open ticket: it belongs to the tickets tab and
+    // keeping it would restore the wrong conversation on the next refresh.
+    next.delete('ticket');
+    setParams(next, { replace: true });
+  };
+
+  const chooseTicket = (id) => {
+    setTicketId(id);
+    const next = new URLSearchParams(params);
+    next.set('tab', 'tickets');
+    if (id) next.set('ticket', id);
+    else next.delete('ticket');
+    setParams(next, { replace: true });
+  };
+
+  useEffect(() => {
+    // Keep in step when the URL changes underneath us, which is what the
+    // session-restore below does on load.
+    if (tabParam && tabParam !== tab) setTab(tabParam);
+    const urlTicket = params.get('ticket');
+    if ((urlTicket || null) !== ticketId) setTicketId(urlTicket || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
 
   // Keep this page out of search indexes.
   useEffect(() => {
@@ -111,7 +147,7 @@ export default function Admin() {
             type="button"
             role="tab"
             aria-selected={activeTab === t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => chooseTab(t.id)}
             className={`-mb-px border-b-2 px-4 py-2 text-sm font-semibold transition ${
               activeTab === t.id
                 ? 'border-accent text-text'
@@ -131,11 +167,19 @@ export default function Admin() {
         <div className="mt-6">
           <AdminDashboard />
         </div>
-      ) : activeTab === 'tickets' ? (
-        <div className="mt-6">
-          <TicketsPanel mode="staff" canClose={isAdmin} />
-        </div>
-      ) : activeTab === 'members' || activeTab === 'staff' ? (
+) : activeTab === 'tickets' ? (
+          <div className="mt-6">
+            {/* Resolving is gated on the tickets grant, not on being an admin: a
+                moderator who can answer somebody should be able to close the case
+                once it is answered. */}
+            <TicketsPanel
+              mode="staff"
+              ticketId={ticketId}
+              onSelect={chooseTicket}
+              canManage={granted.has('tickets')}
+            />
+          </div>
+        ) : activeTab === 'members' || activeTab === 'staff' ? (
         <div className="mt-6">
           <UserAdmin
             scope={activeTab}

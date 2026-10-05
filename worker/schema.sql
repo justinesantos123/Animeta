@@ -224,6 +224,13 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- conversation with them.
   accepted_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
   accepted_at     TEXT,
+  -- A member cannot reopen their own ticket but can ask. Recorded so the request
+  -- is visible in the queue rather than existing only as a notification that has
+  -- since scrolled away. SET NULL: if that account goes, the request goes with
+  -- it, which is right because it was their conversation.
+  reopen_requested_at TEXT,
+  reopen_requested_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  reopen_note    TEXT,
   closed_at   TEXT,
   closed_by   TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -234,6 +241,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status, last_message_at
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tickets_accepted ON tickets(accepted_by);
 CREATE INDEX IF NOT EXISTS idx_tickets_queue ON tickets(status, accepted_by, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_reopen ON tickets(status, reopen_requested_at);
 
 -- One row per message. author_side is stored rather than derived, because a
 -- staff reply and a member reply are governed by different rules: only staff may

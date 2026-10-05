@@ -2777,8 +2777,42 @@ function shapeTicket(row, extra = {}) {
     // Assignment, so the client can say who is on it without a second request.
     acceptedBy: row.accepted_by ?? null,
     acceptedAt: row.accepted_at ?? null,
+    reopenRequestedAt: row.reopen_requested_at ?? null,
+    reopenNote: row.reopen_note ?? null,
     ...extra,
   };
+}
+
+/**
+ * May this account add a message to this ticket?
+ *
+ * An accepted ticket belongs to whoever accepted it, with admins always able to
+ * step in. That is what makes accepting mean something: an admin taking a ticket
+ * over stops moderators replying to it underneath them, which is the point of
+ * taking it over.
+ *
+ * An unaccepted ticket is open to any staff member holding the grant, since
+ * nobody has claimed it yet and somebody with the grant should be able to answer
+ * rather than waiting to be assigned.
+ */
+function mayReply(user, side, ticket) {
+  if (side !== 'staff') return true; // members are limited by ownership instead
+  if (!ticket.accepted_by) return true;
+  if (ticket.accepted_by === user.id) return true;
+  return user.role === 'admin';
+}
+
+/** Why a member cannot chat right now, so the UI can say it rather than mute silently. */
+function chatBlockReason(user, side, ticket) {
+  if (!mayReply(user, side, ticket)) {
+    return 'Another member of staff is handling this ticket. You will be able to reply once it is yours or an admin hands it back.';
+  }
+  if (ticket.status === 'closed') {
+    return side === 'staff'
+      ? 'This ticket is closed. Reopen it before replying.'
+      : 'This ticket is closed. Ask to reopen it and staff will bring it back.';
+  }
+  return null;
 }
 
 /**
@@ -2818,10 +2852,12 @@ async function handleListTickets(request, env, url) {
 
   const { results } = await env.DB.prepare(
     `SELECT t.*, u.email AS requester_email, u.username AS requester_username,
-            a.email AS accepted_by_email, a.username AS accepted_by_username
+            a.email AS accepted_by_email, a.username AS accepted_by_username,
+            r.email AS reopen_by_email
      FROM tickets t
      JOIN users u ON u.id = t.user_id
      LEFT JOIN users a ON a.id = t.accepted_by
+     LEFT JOIN users r ON r.id = t.reopen_requested_by
      WHERE ${conditions.join(' AND ')}
      ORDER BY t.last_message_at DESC
      LIMIT 200`,
@@ -2830,17 +2866,24 @@ async function handleListTickets(request, env, url) {
     .all();
 
   return json({
-    tickets: results.map((row) =>
-      shapeTicket(row, {
+    tickets: results.map((row) => {
+      // Decided per row because ownership differs: a member can always reply to
+      // their own ticket, while staff are limited by whoever accepted it.
+      const rowSide = wantsStaffView ? 'staff' : 'member';
+      return shapeTicket(row, {
         requesterEmail: wantsStaffView ? row.requester_email : undefined,
         requesterUsername: wantsStaffView ? row.requester_username : undefined,
         // Only staff see who is handling it. A member is told through a
         // notification instead, and does not get the assignee list.
         acceptedByEmail: wantsStaffView ? row.accepted_by_email ?? null : undefined,
         acceptedByUsername: wantsStaffView ? row.accepted_by_username ?? null : undefined,
+        // A pending reopen request is the queue's most actionable item, so it is
+        // flagged for staff and quietly reported for the member who made it.
+        reopenRequestedByEmail: wantsStaffView ? row.reopen_by_email ?? null : undefined,
+        canReply: mayReply(user, rowSide, row) && row.status !== 'closed',
         mine: !wantsStaffView,
-      }),
-    ),
+      });
+    }),
     counts: await ticketCounts(env, user),
   });
 }
@@ -3014,6 +3057,15 @@ async function handleGetTicket(request, env, id) {
       // Whether the viewer may take this ticket. False when somebody already
       // has, so the control can explain itself instead of silently reassigning.
       canAccept: staff && ticket.accepted_by !== user.id,
+      // Whether this viewer may type. The reason travels with it, because
+      // disabling a box with no explanation is what makes a ticket look broken.
+      canReply: mayReply(user, side, ticket) && ticket.status !== 'closed',
+      chatBlockedReason: chatBlockReason(user, side, ticket),
+      // Closing is staff work; reopening a member's ticket is theirs to do. A
+      // member asking is a separate, explicit action.
+      canReopen: staff,
+      canRequestReopen: owns && ticket.status === 'closed',
+      reopenRequested: Boolean(ticket.reopen_requested_at),
     }),
     messages: messages.map((m) => ({
       id: m.id,
@@ -3037,9 +3089,18 @@ async function roleOf(env, userId) {
 /**
  * POST /api/tickets/:id/messages — add a reply.
  *
- * Reopening: replying to a closed ticket moves it back to open. A member who was
- * not satisfied reopening the conversation is the normal case, and silently
- * dropping their message because staff had closed it would lose it.
+ * Two rules the UI mirrors but the server owns:
+ *
+ *   Chat needs the ticket open. A closed ticket is finished; replying to it used
+ *   to reopen it as a side effect, which meant a member could undo a resolution by
+ *   talking rather than by asking. Reopening is now an explicit action: a member
+ *   requests it, staff carry it out.
+ *
+ *   An accepted ticket belongs to whoever accepted it, admins excepted. That is
+ *   what gives accepting its meaning -- an admin taking over stops moderators
+ *   replying underneath them.
+ *
+ * Neither is decided from anything in the request body.
  */
 async function handleReplyTicket(request, env, id) {
   const viewer = await ticketViewer(request, env);
@@ -3066,6 +3127,11 @@ async function handleReplyTicket(request, env, id) {
     return json({ error: 'Ticket not found' }, 404);
   }
 
+  const blocked = chatBlockReason(user, side, ticket);
+  if (blocked) {
+    return json({ error: blocked, canReply: false, ticketStatus: ticket.status }, 403);
+  }
+
   const message = validateMessage(body.message, side);
   if (message.error) return json({ error: message.error }, 400);
 
@@ -3075,18 +3141,16 @@ async function handleReplyTicket(request, env, id) {
       `INSERT INTO ticket_messages (id, ticket_id, author_id, author_side, body, has_link)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind(messageId, id, user.id, side, message.body, message.hasLink ? 1 : 0),
+    // last_message_at only. Status is deliberately untouched: a reply is a
+    // message, not a decision to reopen somebody's closed case.
     env.DB.prepare(
       `UPDATE tickets SET message_count = message_count + 1,
-         last_message_at = datetime('now'),
-         status = 'open', closed_at = NULL, closed_by = NULL,
-         updated_at = datetime('now')
+         last_message_at = datetime('now')
        WHERE id = ?`,
     ).bind(id),
   ]);
 
-  // Tell the other side, and only the other side. Staff replying notifies the
-  // member; a member replying notifies staff, which is how a question waiting on
-  // a member's answer gets noticed rather than sitting open.
+  // Tell the other side, and only the other side.
   if (side === 'staff') {
     await notify(env, {
       userIds: [ticket.user_id],
@@ -3110,7 +3174,100 @@ async function handleReplyTicket(request, env, id) {
     }
   }
 
-  return json({ ok: true, message: { id: messageId, side }, status: 'open' }, 201);
+  return json({ ok: true, message: { id: messageId, side }, status: ticket.status }, 201);
+}
+
+/**
+ * POST /api/tickets/:id/reopen-request — the member asks for it back.
+ *
+ * Deliberately does not reopen anything. Staff carry that out, so a resolution
+ * cannot be undone by a member simply continuing to type.
+ */
+async function handleReopenRequest(request, env, id) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  const ticket = await env.DB.prepare('SELECT * FROM tickets WHERE id = ?')
+    .bind(id)
+    .first();
+  if (!ticket) return json({ error: 'Ticket not found' }, 404);
+  if (ticket.user_id !== user.id) return json({ error: 'Ticket not found' }, 404);
+  if (ticket.status !== 'closed') {
+    return json({ error: 'That ticket is already open' }, 400);
+  }
+
+  let note = '';
+  try {
+    const body = await request.json();
+    note = String(body?.note ?? '').trim().slice(0, 300);
+  } catch {
+    note = '';
+  }
+
+  await env.DB.prepare(
+    `UPDATE tickets SET reopen_requested_at = datetime('now'), reopen_requested_by = ?,
+       reopen_note = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(user.id, note || null, id)
+    .run();
+
+  const ids = await staffIds(env);
+  if (ids.length) {
+    await notify(env, {
+      userIds: ids,
+      kind: 'ticket',
+      title: `${user.email} asked to reopen a ticket`,
+      body: note ? `${ticket.subject} — ${note}` : ticket.subject,
+      link: '/kaedeentrans',
+      actor: user.email,
+    });
+  }
+
+  return json({ ok: true, requested: true });
+}
+
+/**
+ * POST /api/tickets/:id/reopen — staff bring it back.
+ *
+ * Clears the member's pending request, so the queue does not keep flagging a
+ * ticket that has already been answered.
+ */
+async function handleReopenTicket(request, env, id) {
+  const auth = await requirePermission(request, env, 'tickets');
+  if (auth.error) return auth.error;
+
+  const ticket = await env.DB.prepare(
+    `SELECT t.*, u.role AS requester_role FROM tickets t
+     JOIN users u ON u.id = t.user_id WHERE t.id = ?`,
+  )
+    .bind(id)
+    .first();
+  if (!ticket) return json({ error: 'Ticket not found' }, 404);
+  if (ticket.requester_role !== 'user') return json({ error: 'Ticket not found' }, 404);
+
+  if (ticket.status === 'open') return json({ ok: true, status: 'open', alreadyOpen: true });
+
+  await env.DB.prepare(
+    `UPDATE tickets SET status = 'open', closed_at = NULL, closed_by = NULL,
+       reopen_requested_at = NULL, reopen_requested_by = NULL, reopen_note = NULL,
+       updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(id)
+    .run();
+
+  await logAdminAction(env, auth.user.id, 'ticket.reopen', id, ticket.subject);
+  await notify(env, {
+    userIds: [ticket.user_id],
+    kind: 'ticket',
+    title: `Ticket reopened: ${ticket.subject}`,
+    body: 'Staff have reopened it. You can reply again.',
+    link: '/support',
+    actor: auth.user.email,
+  });
+
+  return json({ ok: true, status: 'open' });
 }
 
 /**
@@ -4081,6 +4238,12 @@ export async function handleApi(request, env, url) {
       }
       if (seg.length === 4 && seg[3] === 'accept' && method === 'POST') {
         return handleAcceptTicket(request, env, seg[2]);
+      }
+      if (seg.length === 4 && seg[3] === 'reopen' && method === 'POST') {
+        return handleReopenTicket(request, env, seg[2]);
+      }
+      if (seg.length === 4 && seg[3] === 'reopen-request' && method === 'POST') {
+        return handleReopenRequest(request, env, seg[2]);
       }
     }
 

@@ -30,10 +30,19 @@ const QUEUE_POLL_MS = 8000;
  * tickets and staff see the queue based on the session, so there is no way to
  * reach somebody else's ticket by choosing a different mode here.
  *
+ * `ticketId` and `onSelect` keep the open conversation in the URL. That is what
+ * makes a refresh land back in the ticket rather than the list, which matters
+ * most when somebody is part-way through reading a reply.
+ *
  *   member  their own tickets, with a form to open one
- *   staff   the queue, with the requester's address and a close action
+ *   staff   the queue, with the requester's address and the accept/resolve actions
  */
-export default function TicketsPanel({ mode = 'member', canClose = false }) {
+export default function TicketsPanel({
+  mode = 'member',
+  ticketId = null,
+  onSelect,
+  canManage = false,
+}) {
   const isStaff = mode === 'staff';
 
   const [status, setStatus] = useState('open');
@@ -43,6 +52,16 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [composing, setComposing] = useState(false);
+
+  // The URL is the source of truth for which ticket is open, so the initial read
+  // comes from it rather than from state that a reload would empty.
+  const select = useCallback(
+    (id) => {
+      setSelected(null);
+      if (onSelect) onSelect(id);
+    },
+    [onSelect],
+  );
 
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true);
@@ -63,6 +82,29 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Load whatever the URL names. On a reload this is the only thing that puts the
+  // reader back in their conversation.
+  useEffect(() => {
+    if (!ticketId) {
+      setSelected(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getTicket(ticketId)
+      .then((d) => {
+        if (!cancelled) setSelected(d);
+      })
+      .catch(() => {
+        // The id may be stale or belong to somebody else. Falling back to the
+        // list is better than leaving an empty pane.
+        if (!cancelled) setSelected(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticketId]);
 
   // The queue keeps itself current, but only while it is on screen: a hidden tab
   // polling every eight seconds is cost with no reader.
@@ -126,7 +168,8 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
           onCreated={async (id) => {
             setComposing(false);
             await load();
-            await refreshSelected(id);
+            // Opens the new ticket, and puts it in the URL so a refresh keeps it.
+            select(id);
           }}
           setError={setError}
         />
@@ -188,7 +231,7 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
               <li key={t.id}>
                 <button
                   type="button"
-                  onClick={() => refreshSelected(t.id)}
+                  onClick={() => select(t.id)}
                   className={`w-full rounded-[var(--radius-card)] px-4 py-3 text-left ring-1 transition ${
                     selected?.ticket?.id === t.id
                       ? 'bg-accent/10 ring-accent/40'
@@ -234,11 +277,12 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
           <Thread
             data={selected}
             isStaff={isStaff}
-            canClose={canClose}
+            canManage={canManage}
             onReplied={() => afterMutation(selected.ticket.id)}
             onClosed={() => afterMutation(selected.ticket.id)}
             onAccepted={() => onAccepted(selected.ticket.id)}
-            onBack={() => setSelected(null)}
+            onReopened={() => afterMutation(selected.ticket.id)}
+            onBack={() => select(null)}
           />
         )}
       </div>
@@ -247,7 +291,7 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
 }
 
 /** The conversation, its actions, and the reply box for one ticket. */
-function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBack }) {
+function Thread({ data, isStaff, canManage, onReplied, onClosed, onAccepted, onReopened, onBack }) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -328,6 +372,41 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBa
     }
   }
 
+  async function reopen() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.reopenTicket(ticket.id);
+      setNotice('Reopened. The member can reply again.');
+      await onReopened();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function askToReopen() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.requestTicketReopen(ticket.id, message.trim());
+      setMessage('');
+      setNotice('Asked staff to reopen this. They will reply here when it is back.');
+      await onReopened();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const closed = ticket.status === 'closed';
+  const blocked = ticket.chatBlockedReason;
+  const canReply = ticket.canReply && !closed;
+
   return (
     <div className="rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]">
       {/* Only on a phone, where the list is off screen and this is the only way
@@ -359,6 +438,16 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBa
               )}
             </p>
           )}
+          {/* A member waiting on staff to reopen is the most actionable thing on
+              the screen, so it is stated at the top rather than in the queue. */}
+          {isStaff && ticket.reopenRequestedAt && (
+            <p className="mt-1 text-[11px] text-amber-300">
+              {ticket.reopenRequestedByEmail
+                ? `${ticket.reopenRequestedByEmail} asked to reopen this`
+                : 'The member asked to reopen this'}
+              {ticket.reopenNote ? ` — ${ticket.reopenNote}` : ''}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Accept. Offered while the ticket is unclaimed or held by somebody
@@ -380,7 +469,9 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBa
               </span>
             )
           )}
-          {canClose && ticket.status !== 'closed' && (
+          {/* Resolving is any moderator holding the tickets grant, not admin
+              only: whoever can answer somebody can close the case afterwards. */}
+          {canManage && !closed && (
             <button
               type="button"
               onClick={close}
@@ -388,6 +479,16 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBa
               className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:bg-surface-3 disabled:opacity-50"
             >
               Mark resolved
+            </button>
+          )}
+          {canManage && closed && (
+            <button
+              type="button"
+              onClick={reopen}
+              disabled={busy}
+              className="rounded-[var(--radius-control)] bg-accent px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-50"
+            >
+              Reopen
             </button>
           )}
           <button
@@ -441,49 +542,130 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBa
         )}
       </ul>
 
-      <form onSubmit={send} className="border-t border-[var(--color-line-strong)] p-4">
-        <label htmlFor="ticket-reply" className="mb-1 block text-xs font-medium text-muted">
-          {isStaff ? 'Reply to the member' : 'Add a reply'}
-        </label>
-        <textarea
-          id="ticket-reply"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          rows={3}
-          required
-          className="w-full rounded-[var(--radius-control)] bg-bg px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
-          placeholder={
-            isStaff
-              ? 'Answer their question…'
-              : 'Add anything that helps staff answer…'
-          }
-        />
-        {/* Stated here as well as enforced server-side. The server is the real
-            gate; this exists so the rule is not a surprise when the send is
-            refused. */}
-        <p className="mt-1.5 text-[11px] text-muted">
-          {isStaff
-            ? 'Links are allowed in staff replies.'
-            : 'Links are not allowed in tickets. Describe the problem in words.'}
-        </p>
-
-        {error && (
-          <p
-            role="alert"
-            className="mt-2 rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30"
-          >
-            {error}
+      {/* Closed, or somebody else has it. The box is replaced rather than
+          disabled: a greyed-out field with no explanation reads as a bug, and
+          this is a rule the reader needs to know the reason for. The server
+          enforces the same thing, so this is clarity, not the gate. */}
+      {closed ? (
+        <div className="border-t border-[var(--color-line-strong)] p-4">
+          <p className="rounded-[var(--radius-control)] bg-bg px-3 py-2.5 text-xs leading-relaxed text-muted ring-1 ring-[var(--color-line-strong)]">
+            This case is closed, so the conversation is paused. Nobody can post here until it is
+            reopened.
           </p>
-        )}
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="mt-3 rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
-        >
-          {busy ? 'Sending…' : ticket.status === 'closed' ? 'Reply and reopen' : 'Send reply'}
-        </button>
-      </form>
+          {/* Reopening is the staff action here; the member's counterpart is the
+              request form further down. The header already carries a Reopen
+              control where Mark resolved sits, so this block explains the pause
+              rather than offering the same button twice. */}
+          {ticket.canReopen && (
+            <p className="mt-2 text-[11px] text-muted">
+              Reopen it above to bring this back and let the conversation continue.
+            </p>
+          )}
+
+          {!isStaff && ticket.canRequestReopen && (
+            <form onSubmit={askToReopen} className="mt-3">
+              {ticket.reopenRequested ? (
+                <p className="rounded-[var(--radius-control)] bg-amber-500/10 px-3 py-2.5 text-xs leading-relaxed text-amber-300 ring-1 ring-amber-500/30">
+                  You have asked staff to reopen this. They will bring it back and reply here.
+                </p>
+              ) : (
+                <>
+                  <label
+                    htmlFor="reopen-note"
+                    className="mb-1 block text-xs font-medium text-muted"
+                  >
+                    Why do you need it reopened? (optional)
+                  </label>
+                  <textarea
+                    id="reopen-note"
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    rows={2}
+                    maxLength={300}
+                    className="w-full rounded-[var(--radius-control)] bg-bg px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
+                    placeholder="What is still wrong?"
+                  />
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="mt-2 w-full rounded-[var(--radius-control)] bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
+                  >
+                    {busy ? 'Sending…' : 'Ask staff to reopen'}
+                  </button>
+                </>
+              )}
+            </form>
+          )}
+
+          {error && (
+            <p
+              role="alert"
+              className="mt-2 rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30"
+            >
+              {error}
+            </p>
+          )}
+        </div>
+      ) : blocked ? (
+        <div className="border-t border-[var(--color-line-strong)] p-4">
+          <p className="rounded-[var(--radius-control)] bg-bg px-3 py-2.5 text-xs leading-relaxed text-muted ring-1 ring-[var(--color-line-strong)]">
+            {blocked}
+          </p>
+          {error && (
+            <p
+              role="alert"
+              className="mt-2 rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30"
+            >
+              {error}
+            </p>
+          )}
+        </div>
+      ) : (
+        <form onSubmit={send} className="border-t border-[var(--color-line-strong)] p-4">
+          <label htmlFor="ticket-reply" className="mb-1 block text-xs font-medium text-muted">
+            {isStaff ? 'Reply to the member' : 'Add a reply'}
+          </label>
+          <textarea
+            id="ticket-reply"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            rows={3}
+            required
+            className="w-full rounded-[var(--radius-control)] bg-bg px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent"
+            placeholder={
+              isStaff
+                ? 'Answer their question…'
+                : 'Add anything that helps staff answer…'
+            }
+          />
+          {/* Stated here as well as enforced server-side. The server is the real
+              gate; this exists so the rule is not a surprise when the send is
+              refused. */}
+          <p className="mt-1.5 text-[11px] text-muted">
+            {isStaff
+              ? 'Links are allowed in staff replies.'
+              : 'Links are not allowed in tickets. Describe the problem in words.'}
+          </p>
+
+          {error && (
+            <p
+              role="alert"
+              className="mt-2 rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30"
+            >
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={busy || !canReply}
+            className="mt-3 rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
+          >
+            {busy ? 'Sending…' : 'Send reply'}
+          </button>
+        </form>
+      )}
     </div>
   );
 }

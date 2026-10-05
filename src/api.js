@@ -172,6 +172,14 @@ export const api = {
   replyTicket: (id, message) =>
     request(`/tickets/${encodeURIComponent(id)}/messages`, { method: 'POST', body: { message } }),
   acceptTicket: (id) => request(`/tickets/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
+  // Staff bringing a closed ticket back. Deliberately separate from the member's
+  // reopen request: asking is the member's action, doing it is staff's.
+  reopenTicket: (id) => request(`/tickets/${encodeURIComponent(id)}/reopen`, { method: 'POST' }),
+  requestTicketReopen: (id, note) =>
+    request(`/tickets/${encodeURIComponent(id)}/reopen-request`, {
+      method: 'POST',
+      body: { note },
+    }),
   closeTicket: (id) => request(`/tickets/${encodeURIComponent(id)}/close`, { method: 'POST' }),
 
   // self-service reset

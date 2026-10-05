@@ -135,6 +135,16 @@ check(
   migrations.some((f) => /ADD COLUMN accepted_by/.test(readFileSync(join(migrationsDir, f), 'utf8'))),
 );
 
+// Reopen requests. The note and the requester are stored so a waiting request is
+// visible in the queue rather than only ever having fired a notification.
+check('tickets records a reopen request', /reopen_requested_at\s+TEXT/.test(schema));
+check('tickets records who asked', /reopen_requested_by\s+TEXT/.test(schema));
+check('tickets keeps the reason', /reopen_note\s+TEXT/.test(schema));
+check(
+  'a migration adds the reopen columns',
+  migrations.some((f) => /ADD COLUMN reopen_requested_at/.test(readFileSync(join(migrationsDir, f), 'utf8'))),
+);
+
 console.log(
   failed === 0 ? '\nSchema and migrations agree.' : `\n${failed} schema check(s) failed.`,
 );

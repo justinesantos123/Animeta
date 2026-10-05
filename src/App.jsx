@@ -5,6 +5,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider } from './context/AuthContext';
 import { CatalogProvider } from './context/CatalogContext';
 import { NotificationsProvider } from './context/NotificationsContext';
+import RouteMemory from './components/RouteMemory';
 import Home from './pages/Home';
 import Browse from './pages/Browse';
 import Category from './pages/Category';
@@ -36,6 +37,9 @@ export default function App() {
 
         <TopNav />
         <WelcomeBanner />
+        {/* Keeps a refresh from losing the page while the zone redirects
+            non-asset paths home. See the component for why it exists. */}
+        <RouteMemory />
 
         <main id="main">
           {/* Anything below can fail without blanking the whole page. */}
@@ -51,6 +55,9 @@ export default function App() {
                   arrival, so this is a one-shot page rather than a form. */}
               <Route path="/verify-email" element={<VerifyEmail />} />
               <Route path="/support" element={<Support />} />
+              {/* The open conversation is a route, not component state, so a
+                  refresh comes back to the ticket rather than the list. */}
+              <Route path="/support/:ticketId" element={<Support />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/announcements" element={<Announcements />} />
