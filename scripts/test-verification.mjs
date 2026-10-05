@@ -286,6 +286,58 @@ check(
   /async function handleCreateTicket[\s\S]{0,200}getUser\(request, env\)/.test(api),
 );
 
+// ------------------------------------------------------------ assignment
+check(
+  'accepting a ticket needs the tickets grant',
+  /async function handleAcceptTicket[\s\S]{0,200}requirePermission\(request, env, 'tickets'\)/.test(api),
+);
+check(
+  'accepting names the staff member on it',
+  /SET accepted_by = \?, accepted_at = datetime\('now'\)/.test(api),
+);
+check(
+  'the member is told when somebody takes their ticket',
+  /picked up your ticket/.test(api) && /is now handling your ticket/.test(api),
+);
+check(
+  'a repeat press does not re-notify the member',
+  /if \(!alreadyMine\) \{\s*\n\s*await notify/.test(api),
+);
+check(
+  'the handover is audited as its own event',
+  /ticket\.accept\.reassign/.test(api) && /ticket\.accept'/.test(api),
+);
+check(
+  'assignment survives the ticket being closed',
+  /UPDATE tickets SET status = 'closed'/.test(api) &&
+    !/UPDATE tickets SET status = 'closed'[\s\S]{0,200}accepted_by = NULL/.test(api),
+);
+check(
+  'the assignee is only shown to staff',
+  /acceptedByEmail: staff \?/.test(api) &&
+    /acceptedByEmail: wantsStaffView \?/.test(api),
+);
+
+// ------------------------------------------------------------ live updates
+const panel = readFileSync(
+  new URL('../src/components/TicketsPanel.jsx', import.meta.url),
+  'utf8',
+);
+// Polling an open conversation is what makes it read as a chat. Asserted rather
+// than left implicit, because the interval and the append-only read are the
+// whole feature.
+check('an open conversation polls', /setInterval\(\(\) => refreshSelected\(openId, \{ quiet: true \}\), POLL_MS\)/.test(panel));
+check('the queue polls too', /load\(\{ quiet: true \}\), QUEUE_POLL_MS/.test(panel));
+check('the open ticket id drives the interval', /const openId = selected\?\.ticket\?\.id \?\? null;/.test(panel));
+check('a failed background refresh keeps the page', /if \(!quiet\) setError\(e\.message\)/.test(panel));
+check('the thread sticks to the bottom only when already there', /pinnedRef\.current = el\.scrollHeight/.test(panel));
+check('it lets go when the reader scrolls up', /el\.clientHeight < 40/.test(panel));
+
+// Mobile: the list and the conversation must not both be on screen stacked.
+check('the list is hidden while a ticket is open on mobile', /selected \? 'hidden lg:block/.test(panel));
+check('there is a way back to the list on mobile', /All tickets/.test(panel) && /lg:hidden/.test(panel));
+check('the mobile back control is hidden on desktop', /lg:inline/.test(panel));
+
 check('staff are notified of a new ticket',
   /kind: 'ticket'/.test(api) && /userIds: staffRecipients/.test(api),
 );

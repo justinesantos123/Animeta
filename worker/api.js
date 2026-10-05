@@ -2774,6 +2774,9 @@ function shapeTicket(row, extra = {}) {
     lastMessageAt: row.last_message_at,
     closedAt: row.closed_at,
     createdAt: row.created_at,
+    // Assignment, so the client can say who is on it without a second request.
+    acceptedBy: row.accepted_by ?? null,
+    acceptedAt: row.accepted_at ?? null,
     ...extra,
   };
 }
@@ -2814,8 +2817,11 @@ async function handleListTickets(request, env, url) {
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT t.*, u.email AS requester_email, u.username AS requester_username
-     FROM tickets t JOIN users u ON u.id = t.user_id
+    `SELECT t.*, u.email AS requester_email, u.username AS requester_username,
+            a.email AS accepted_by_email, a.username AS accepted_by_username
+     FROM tickets t
+     JOIN users u ON u.id = t.user_id
+     LEFT JOIN users a ON a.id = t.accepted_by
      WHERE ${conditions.join(' AND ')}
      ORDER BY t.last_message_at DESC
      LIMIT 200`,
@@ -2828,6 +2834,10 @@ async function handleListTickets(request, env, url) {
       shapeTicket(row, {
         requesterEmail: wantsStaffView ? row.requester_email : undefined,
         requesterUsername: wantsStaffView ? row.requester_username : undefined,
+        // Only staff see who is handling it. A member is told through a
+        // notification instead, and does not get the assignee list.
+        acceptedByEmail: wantsStaffView ? row.accepted_by_email ?? null : undefined,
+        acceptedByUsername: wantsStaffView ? row.accepted_by_username ?? null : undefined,
         mine: !wantsStaffView,
       }),
     ),
@@ -2963,8 +2973,12 @@ async function handleGetTicket(request, env, id) {
   const staff = side === 'staff';
 
   const ticket = await env.DB.prepare(
-    `SELECT t.*, u.email AS requester_email, u.username AS requester_username
-     FROM tickets t JOIN users u ON u.id = t.user_id WHERE t.id = ?`,
+    `SELECT t.*, u.email AS requester_email, u.username AS requester_username,
+            a.email AS accepted_by_email, a.username AS accepted_by_username
+     FROM tickets t
+     JOIN users u ON u.id = t.user_id
+     LEFT JOIN users a ON a.id = t.accepted_by
+     WHERE t.id = ?`,
   )
     .bind(id)
     .first();
@@ -2990,9 +3004,16 @@ async function handleGetTicket(request, env, id) {
     ticket: shapeTicket(ticket, {
       requesterEmail: staff ? ticket.requester_email : undefined,
       requesterUsername: staff ? ticket.requester_username : undefined,
+      // A member is told who took it through a notification; showing them a
+      // staff assignee in the thread as well would just be the same fact twice.
+      acceptedByEmail: staff ? ticket.accepted_by_email ?? null : null,
+      acceptedByUsername: staff ? ticket.accepted_by_username ?? null : null,
       mine: owns,
       // Staff need to know who they are talking to before they reply.
       canReplyAsStaff: staff,
+      // Whether the viewer may take this ticket. False when somebody already
+      // has, so the control can explain itself instead of silently reassigning.
+      canAccept: staff && ticket.accepted_by !== user.id,
     }),
     messages: messages.map((m) => ({
       id: m.id,
@@ -3090,6 +3111,77 @@ async function handleReplyTicket(request, env, id) {
   }
 
   return json({ ok: true, message: { id: messageId, side }, status: 'open' }, 201);
+}
+
+/**
+ * POST /api/tickets/:id/accept — pick the ticket up.
+ *
+ * Whoever accepts it is named on it and the member is told, so a conversation has
+ * one owner rather than several staff each assuming somebody else will reply.
+ *
+ * Reassignment is allowed rather than refused. Refusing would be tidier on paper
+ * but wrong in practice: the common case is somebody who took a ticket and then
+ * went on leave, and leaving it locked to an absent account is how a ticket goes
+ * unanswered forever. The handover is audited, and the member is told again, so a
+ * change of hands is visible rather than silent.
+ */
+async function handleAcceptTicket(request, env, id) {
+  const auth = await requirePermission(request, env, 'tickets');
+  if (auth.error) return auth.error;
+
+  const ticket = await env.DB.prepare(
+    `SELECT t.*, u.role AS requester_role FROM tickets t
+     JOIN users u ON u.id = t.user_id WHERE t.id = ?`,
+  )
+    .bind(id)
+    .first();
+  if (!ticket) return json({ error: 'Ticket not found' }, 404);
+
+  // The queue is about members' problems. A ticket raised by staff is still that
+  // staff member's own conversation, and 404 keeps it unreadable from here.
+  if (ticket.requester_role !== 'user') return json({ error: 'Ticket not found' }, 404);
+
+  const alreadyMine = ticket.accepted_by === auth.user.id;
+
+  await env.DB.prepare(
+    `UPDATE tickets SET accepted_by = ?, accepted_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(auth.user.id, id)
+    .run();
+
+  await logAdminAction(
+    env,
+    auth.user.id,
+    alreadyMine ? 'ticket.accept.repeat' : ticket.accepted_by ? 'ticket.accept.reassign' : 'ticket.accept',
+    id,
+    ticket.subject,
+  );
+
+  // Told either way, because from the member's side "somebody is on it" is new
+  // information even when it is the same somebody as before. Not sent for a
+  // repeat press, which would be the member getting pinged for nothing.
+  if (!alreadyMine) {
+    await notify(env, {
+      userIds: [ticket.user_id],
+      kind: 'ticket',
+      title: ticket.accepted_by
+        ? `${auth.user.email} is now handling your ticket`
+        : `${auth.user.email} picked up your ticket`,
+      body: ticket.subject,
+      link: '/support',
+      actor: auth.user.email,
+    });
+  }
+
+  return json({
+    ok: true,
+    acceptedBy: auth.user.id,
+    acceptedByEmail: auth.user.email,
+    acceptedByUsername: auth.user.username,
+    acceptedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    reassigned: Boolean(ticket.accepted_by) && !alreadyMine,
+  });
 }
 
 /**
@@ -3986,6 +4078,9 @@ export async function handleApi(request, env, url) {
       }
       if (seg.length === 4 && seg[3] === 'close' && method === 'POST') {
         return handleCloseTicket(request, env, seg[2]);
+      }
+      if (seg.length === 4 && seg[3] === 'accept' && method === 'POST') {
+        return handleAcceptTicket(request, env, seg[2]);
       }
     }
 

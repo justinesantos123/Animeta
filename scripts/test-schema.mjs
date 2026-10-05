@@ -121,6 +121,20 @@ check(
   /user_id\s+TEXT\s+NOT NULL REFERENCES users\(id\)\s+ON DELETE CASCADE/.test(schema),
 );
 
+// Ticket assignment. The referential action is the part worth pinning: SET NULL
+// keeps the conversation when a staff account is purged, CASCADE would delete a
+// member's support history because the person typing went away.
+check('tickets records who accepted it', /accepted_by\s+TEXT/.test(schema));
+check('tickets records when', /accepted_at\s+TEXT/.test(schema));
+check(
+  'accepted_by SET NULL rather than CASCADE, so the conversation survives',
+  /accepted_by\s+TEXT\s+REFERENCES users\(id\)\s+ON DELETE SET NULL/.test(schema),
+);
+check(
+  'a migration adds the assignment columns',
+  migrations.some((f) => /ADD COLUMN accepted_by/.test(readFileSync(join(migrationsDir, f), 'utf8'))),
+);
+
 console.log(
   failed === 0 ? '\nSchema and migrations agree.' : `\n${failed} schema check(s) failed.`,
 );

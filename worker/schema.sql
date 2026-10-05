@@ -219,6 +219,11 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- which is the number the dashboard leads with.
   message_count   INTEGER NOT NULL DEFAULT 0,
   last_message_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Who picked it up. ON DELETE SET NULL: purging a staff account clears the
+  -- assignment, which is right -- nobody is on it -- without taking the whole
+  -- conversation with them.
+  accepted_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
+  accepted_at     TEXT,
   closed_at   TEXT,
   closed_by   TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -227,6 +232,8 @@ CREATE TABLE IF NOT EXISTS tickets (
 
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status, last_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_accepted ON tickets(accepted_by);
+CREATE INDEX IF NOT EXISTS idx_tickets_queue ON tickets(status, accepted_by, last_message_at DESC);
 
 -- One row per message. author_side is stored rather than derived, because a
 -- staff reply and a member reply are governed by different rules: only staff may

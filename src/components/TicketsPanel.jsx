@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { timeAgo } from '../utils/timeAgo';
 
@@ -7,6 +7,21 @@ const STATUS_TABS = [
   { id: 'closed', label: 'Closed' },
   { id: 'all', label: 'All' },
 ];
+
+/**
+ * How often an open conversation re-reads itself.
+ *
+ * This is polling, not push. The Worker has no pub/sub, so anything genuinely
+ * real-time would mean a Durable Object holding a websocket per conversation --
+ * more machinery than a support queue of this size justifies, and a new binding
+ * to operate. Polling gets messages on screen in about this long, which for two
+ * people talking is indistinguishable from live. Deliberately not faster: at
+ * three seconds the queue costs little and nothing spams the account.
+ */
+const POLL_MS = 3000;
+
+/** The queue itself refreshes less often than an open conversation. */
+const QUEUE_POLL_MS = 8000;
 
 /**
  * Support tickets, for either side of the conversation.
@@ -29,17 +44,19 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
   const [error, setError] = useState(null);
   const [composing, setComposing] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) setLoading(true);
     try {
       const d = await api.listTickets(status);
       setTickets(d.tickets);
       setCounts(d.counts);
       setError(null);
     } catch (e) {
-      setError(e.message);
+      // A failed background refresh must not replace a working page with an
+      // error, so it is only surfaced on the first, explicit load.
+      if (!quiet) setError(e.message);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [status]);
 
@@ -47,19 +64,47 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
     load();
   }, [load]);
 
-  // Re-read after anything that mutates the open ticket. Closing or replying
-  // changes its status, and leaving the copy already loaded on screen would show
+  // The queue keeps itself current, but only while it is on screen: a hidden tab
+  // polling every eight seconds is cost with no reader.
+  useEffect(() => {
+    if (typeof document === 'undefined' || document.hidden) return undefined;
+    const id = setInterval(() => load({ quiet: true }), QUEUE_POLL_MS);
+    return () => clearInterval(id);
+  }, [load]);
+
+  // Re-read after anything that mutates the open ticket. Closing, replying or
+  // accepting changes it, and leaving the copy already loaded on screen would show
   // a stale status until the member navigated away. Done explicitly rather than
   // in an effect on the id, so selecting a ticket fetches it exactly once.
-  const refreshSelected = useCallback(async (id) => {
+  //
+  // `quiet` is what the live poll uses: a message arriving does not want to
+  // replace the whole thread, only to append.
+  const refreshSelected = useCallback(async (id, { quiet = false } = {}) => {
     if (!id) return;
     try {
       const d = await api.getTicket(id);
       setSelected(d);
     } catch {
-      setSelected(null);
+      if (!quiet) setSelected(null);
     }
   }, []);
+
+  // The id of the conversation on screen, tracked separately so the live poll can
+  // depend on it without depending on the whole fetched object -- otherwise a new
+  // message would restart the interval on every tick and never fire.
+  const openId = selected?.ticket?.id ?? null;
+
+  useEffect(() => {
+    if (!openId) return undefined;
+    const id = setInterval(() => refreshSelected(openId, { quiet: true }), POLL_MS);
+    return () => clearInterval(id);
+  }, [openId, refreshSelected]);
+
+  // Picking up a ticket changes it for everybody, so both sides re-read.
+  const onAccepted = async (id) => {
+    await load({ quiet: true });
+    await refreshSelected(id);
+  };
 
   async function afterMutation(id) {
     await load();
@@ -116,8 +161,15 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
         </p>
       )}
 
-      <div className={selected ? 'grid gap-5 lg:grid-cols-[20rem_1fr]' : ''}>
-        <div className={selected ? 'lg:max-h-[36rem] lg:overflow-y-auto' : ''}>
+      {/* Mobile: the list and the conversation are separate screens, not one
+          column. Stacked, opening a ticket left the thread below the whole
+          queue on a phone, so answering somebody meant scrolling past every
+          other ticket first. From lg up they sit side by side, which is where
+          both fit at once. */}
+      <div className={selected ? 'lg:grid lg:grid-cols-[20rem_1fr] lg:gap-5' : ''}>
+        <div
+          className={selected ? 'hidden lg:block lg:max-h-[36rem] lg:overflow-y-auto' : ''}
+        >
           {loading && tickets.length === 0 && (
             <p className="py-6 text-sm text-muted">Loading tickets…</p>
           )}
@@ -162,6 +214,16 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
                     {t.messageCount} message{t.messageCount === 1 ? '' : 's'} ·{' '}
                     {timeAgo(t.lastMessageAt)}
                   </p>
+                  {/* Who is on it, shown on the row so two staff scanning the
+                      queue can see what is already being answered without
+                      opening anything. */}
+                  {isStaff && (
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                      {t.acceptedByEmail
+                        ? `with ${t.acceptedByUsername || t.acceptedByEmail}`
+                        : 'unclaimed'}
+                    </p>
+                  )}
                 </button>
               </li>
             ))}
@@ -175,6 +237,7 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
             canClose={canClose}
             onReplied={() => afterMutation(selected.ticket.id)}
             onClosed={() => afterMutation(selected.ticket.id)}
+            onAccepted={() => onAccepted(selected.ticket.id)}
             onBack={() => setSelected(null)}
           />
         )}
@@ -183,21 +246,48 @@ export default function TicketsPanel({ mode = 'member', canClose = false }) {
   );
 }
 
-/** The reply box and close action for one ticket. */
-function Thread({ data, isStaff, canClose, onReplied, onClosed, onBack }) {
+/** The conversation, its actions, and the reply box for one ticket. */
+function Thread({ data, isStaff, canClose, onReplied, onClosed, onAccepted, onBack }) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
 
   const ticket = data.ticket;
+  const messages = data.messages || [];
+
+  // Auto-scroll, but only when the reader is already at the bottom. Yanking the
+  // view down while somebody is reading further up is worse than a new message
+  // not being visible instantly.
+  const scrollRef = useRef(null);
+  const pinnedRef = useRef(true);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [messages.length]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
 
   async function send(e) {
     e.preventDefault();
+    if (!message.trim()) return;
     setBusy(true);
     setError(null);
     try {
       await api.replyTicket(ticket.id, message);
       setMessage('');
+      // Follow our own message down, so the reply is seen rather than left above
+      // the fold.
+      pinnedRef.current = true;
       await onReplied();
     } catch (err) {
       setError(err.message);
@@ -219,9 +309,38 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onBack }) {
     }
   }
 
+  async function accept() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const d = await api.acceptTicket(ticket.id);
+      setNotice(
+        d.reassigned
+          ? `Reassigned to you. ${ticket.acceptedByEmail || 'Somebody else'} was on it.`
+          : 'You are on this ticket now.',
+      );
+      await onAccepted();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="rounded-[var(--radius-card)] bg-surface ring-1 ring-[var(--color-line-strong)]">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-line-strong)] px-4 py-3">
+      {/* Only on a phone, where the list is off screen and this is the only way
+          back to it. */}
+      <button
+        type="button"
+        onClick={onBack}
+        className="flex w-full items-center gap-1.5 border-b border-[var(--color-line-strong)] px-4 py-2.5 text-left text-xs font-semibold text-accent lg:hidden"
+      >
+        <span aria-hidden="true">←</span> All tickets
+      </button>
+
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--color-line-strong)] px-4 py-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{ticket.subject}</p>
           <p className="mt-0.5 text-[11px] text-muted">
@@ -229,8 +348,38 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onBack }) {
             {ticket.messageCount === 1 ? '' : 's'}
             {isStaff && ticket.requesterEmail ? ` · ${ticket.requesterEmail}` : ''}
           </p>
+          {isStaff && (
+            <p className="mt-1 text-[11px]">
+              {ticket.acceptedByEmail ? (
+                <span className="text-accent">
+                  On it: {ticket.acceptedByUsername || ticket.acceptedByEmail}
+                </span>
+              ) : (
+                <span className="text-amber-300">Nobody has picked this up yet</span>
+              )}
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Accept. Offered while the ticket is unclaimed or held by somebody
+              else, and replaced by a plain label once it is yours -- a button
+              that does nothing is worse than no button. */}
+          {isStaff && ticket.acceptedBy !== undefined && (
+            ticket.canAccept ? (
+              <button
+                type="button"
+                onClick={accept}
+                disabled={busy}
+                className="rounded-[var(--radius-control)] bg-accent px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-50"
+              >
+                {ticket.acceptedByEmail ? 'Take over' : 'Accept'}
+              </button>
+            ) : (
+              <span className="rounded-[var(--radius-control)] bg-accent/15 px-2.5 py-1 text-xs font-semibold text-accent">
+                Accepted
+              </span>
+            )
+          )}
           {canClose && ticket.status !== 'closed' && (
             <button
               type="button"
@@ -244,24 +393,36 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onBack }) {
           <button
             type="button"
             onClick={onBack}
-            className="rounded-[var(--radius-control)] px-2 py-1 text-xs text-muted transition hover:text-text"
+            className="hidden rounded-[var(--radius-control)] px-2 py-1 text-xs text-muted transition hover:text-text lg:inline"
           >
             Close
           </button>
         </div>
       </div>
 
-      <ul className="max-h-80 divide-y divide-white/5 overflow-y-auto">
-        {(data.messages || []).map((m) => (
+      {notice && (
+        <p className="border-b border-[var(--color-line)] bg-accent/10 px-4 py-2 text-[11px] text-accent">
+          {notice}
+        </p>
+      )}
+
+      <ul ref={scrollRef} className="max-h-[22rem] divide-y divide-white/5 overflow-y-auto lg:max-h-80">
+        {messages.map((m) => (
           <li
             key={m.id}
             className={`px-4 py-3 ${m.side === 'staff' ? 'bg-accent/5' : ''}`}
           >
             <div className="flex items-baseline justify-between gap-2">
-              <p className="text-xs font-semibold text-text">
-                {m.side === 'staff' ? 'Staff' : isStaff && m.authorEmail ? m.authorEmail : 'You'}
+              <p className="truncate text-xs font-semibold text-text">
+                {m.side === 'staff'
+                  ? isStaff && m.authorEmail
+                    ? m.authorEmail
+                    : 'Staff'
+                  : isStaff && m.authorEmail
+                    ? m.authorEmail
+                    : 'You'}
               </p>
-              <p className="text-[11px] text-faint">{timeAgo(m.createdAt)}</p>
+              <p className="shrink-0 text-[11px] text-faint">{timeAgo(m.createdAt)}</p>
             </div>
             <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-text">
               {m.body}
@@ -275,6 +436,9 @@ function Thread({ data, isStaff, canClose, onReplied, onClosed, onBack }) {
             )}
           </li>
         ))}
+        {messages.length === 0 && (
+          <li className="px-4 py-6 text-center text-xs text-muted">No messages yet.</li>
+        )}
       </ul>
 
       <form onSubmit={send} className="border-t border-[var(--color-line-strong)] p-4">

@@ -171,6 +171,7 @@ export const api = {
   createTicket: (payload) => request('/tickets', { method: 'POST', body: payload }),
   replyTicket: (id, message) =>
     request(`/tickets/${encodeURIComponent(id)}/messages`, { method: 'POST', body: { message } }),
+  acceptTicket: (id) => request(`/tickets/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   closeTicket: (id) => request(`/tickets/${encodeURIComponent(id)}/close`, { method: 'POST' }),
 
   // self-service reset
