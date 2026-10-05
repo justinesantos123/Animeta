@@ -30,6 +30,11 @@ async function request(path, { method = 'GET', body, signal } = {}) {
   if (!res.ok) {
     const err = new Error(data?.error || `Request failed (${res.status})`);
     err.status = res.status;
+    // Carried through so a caller can tell "that email is not confirmed yet" from
+    // "that password is wrong". The two look identical in the message and need
+    // different screens: one offers a new link, the other asks for a retry.
+    if (data?.needsVerification) err.needsVerification = true;
+    if (data?.email) err.email = data.email;
     throw err;
   }
   return data;
@@ -40,8 +45,14 @@ export const api = {
 
   // auth
   me: () => request('/auth/me'),
-  signup: (email, password, username) =>
-    request('/auth/signup', { method: 'POST', body: { email, password, username } }),
+  // Phone is optional and never verified. Signup does not sign you in: the
+  // address has to be confirmed first, so the caller has to handle a response
+  // with needsVerification set.
+  signup: (email, password, username, phone) =>
+    request('/auth/signup', { method: 'POST', body: { email, password, username, phone } }),
+  verifyEmail: (token) => request('/auth/verify-email', { method: 'POST', body: { token } }),
+  resendVerification: (email) =>
+    request('/auth/resend-verification', { method: 'POST', body: { email } }),
   login: (email, password) => request('/auth/login', { method: 'POST', body: { email, password } }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   updateProfile: (payload) => request('/auth/profile', { method: 'PUT', body: payload }),
@@ -99,7 +110,9 @@ export const api = {
 
   // admin user management
   dashboard: () => request('/admin/dashboard'),
-  listUsers: () => request('/admin/users'),
+  // scope: 'members' | 'staff' | 'all'. The console has a tab per group, so it
+  // asks for one slice rather than filtering a combined list itself.
+  listUsers: (scope = 'all') => request(`/admin/users?scope=${encodeURIComponent(scope)}`),
   createUser: (payload) => request('/admin/users', { method: 'POST', body: payload }),
   setUserRole: (id, role) =>
     request(`/admin/users/${encodeURIComponent(id)}/role`, { method: 'POST', body: { role } }),
@@ -138,7 +151,21 @@ export const api = {
   listNotifications: () => request('/notifications'),
   markNotificationRead: (id) =>
     request(`/notifications/${encodeURIComponent(id)}`, { method: 'POST' }),
-  markAllNotificationsRead: () => request('/notifications', { method: 'POST' }),
+  // scope: 'normal' | 'tickets' | 'all'. The bell has two tabs and each clears
+  // only its own, so marking "all" has to be an explicit choice rather than what
+  // the button next to each tab happens to do.
+  markAllNotificationsRead: (scope = 'all') =>
+    request(`/notifications?scope=${encodeURIComponent(scope)}`, { method: 'POST' }),
+
+  // Support tickets. One set of routes for both sides: the API returns a member's
+  // own tickets and staff see the queue, decided from the session.
+  listTickets: (status) =>
+    request(`/tickets${status && status !== 'all' ? `?status=${encodeURIComponent(status)}` : ''}`),
+  getTicket: (id) => request(`/tickets/${encodeURIComponent(id)}`),
+  createTicket: (payload) => request('/tickets', { method: 'POST', body: payload }),
+  replyTicket: (id, message) =>
+    request(`/tickets/${encodeURIComponent(id)}/messages`, { method: 'POST', body: { message } }),
+  closeTicket: (id) => request(`/tickets/${encodeURIComponent(id)}/close`, { method: 'POST' }),
 
   // self-service reset
   requestPasswordReset: (email) =>

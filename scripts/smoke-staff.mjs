@@ -66,6 +66,29 @@ const USERS = {
   mailConfigured: false,
 };
 
+// What each role should see in the console tab bar.
+//
+// Asserted rather than logged, because the tab bar collapsing to one tab is
+// silent: every tab that vanished is simply a tab the user cannot open, and the
+// old test printed the list without checking it. The mock for /api/auth/me also
+// omitted `permissions`, which is what made the collapse happen in the first
+// place -- the console filters tabs on that list.
+const PERMISSION_IDS = ['catalog', 'announcements', 'notifications', 'users', 'upload', 'tickets'];
+
+const EXPECTED_TABS = {
+  // An admin holds every permission implicitly, so every tab is theirs.
+  admin: ['Dashboard', 'Catalog', 'Members', 'Staff', 'Tickets', 'Announcements'],
+  // A moderator sees only what has been granted. The dashboard is admin-only, so
+  // a moderator is not offered it, and with no grants there is genuinely no
+  // tablist at all.
+  moderator: ['Catalog', 'Members', 'Staff', 'Announcements'],
+};
+
+function grantedFor(role) {
+  if (role === 'admin') return [...PERMISSION_IDS];
+  return ['catalog', 'users', 'announcements'];
+}
+
 async function run(role) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -97,7 +120,20 @@ async function run(role) {
       .split('?')[0];
     seen.push(path);
     if (path === '/api/auth/me') {
-      return json({ user: { id: 'u1', email: 'justinezantoz01@gmail.com', username: 'justinezantoz01', displayName: null, role } });
+      // permissions included, matching the real endpoint. Omitting it here is
+      // what let the console silently collapse to a single tab.
+      return json({
+        user: {
+          id: 'u1',
+          email: 'justinezantoz01@gmail.com',
+          username: 'justinezantoz01',
+          displayName: null,
+          phone: null,
+          emailVerified: true,
+          role,
+          permissions: grantedFor(role),
+        },
+      });
     }
     if (path === '/api/admin/users') return json(USERS);
     if (path === '/api/admin/dashboard') return json(DASHBOARD);
@@ -106,6 +142,17 @@ async function run(role) {
     if (path === '/api/titles') return json({ titles: [] });
     if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
     if (path === '/api/settings') return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+    // The Tickets tab. An empty queue, so the tab has to render its empty state
+    // rather than blowing up on an unexpected shape.
+    if (path === '/api/tickets') {
+      return json({ tickets: [], counts: { open: 0, closed: 0, total: 0 } });
+    }
+    if (path.startsWith('/api/tickets/')) {
+      return json({
+        ticket: { id: 't1', subject: 'Cannot play episode 2', status: 'open', messageCount: 1 },
+        messages: [{ id: 'm1', side: 'member', body: 'It buffers.', hasLink: false, createdAt: '2026-10-05 09:00:00' }],
+      });
+    }
     return json({});
   };
 
@@ -146,9 +193,21 @@ async function run(role) {
   }
 
   const tabs = [...tablist.querySelectorAll('[role="tab"]')];
-  console.log(`tabs visible as ${role}: ${tabs.map((t) => t.textContent.trim()).join(', ')}`);
+  const labels = tabs.map((t) => t.textContent.trim());
 
   let failed = 0;
+
+  // Compared as a set: order is presentation, membership is the behaviour.
+  const missing = EXPECTED_TABS[role].filter((l) => !labels.includes(l));
+  if (missing.length) {
+    failed++;
+    console.log(
+      `FAIL (${role}) console is missing tabs: ${missing.join(', ')} (saw: ${labels.join(', ')})`,
+    );
+  } else {
+    console.log(`ok   (${role}) console shows ${labels.length} tabs: ${labels.join(', ')}`);
+  }
+
   for (const tab of tabs) {
     const label = tab.textContent.trim();
     errors.length = 0;

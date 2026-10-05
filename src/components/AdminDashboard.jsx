@@ -55,6 +55,7 @@ export default function AdminDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [tab, setTab] = useState('overview');
 
   const load = useCallback(async () => {
     try {
@@ -94,9 +95,62 @@ export default function AdminDashboard() {
 
   const { counts, totals, mostActive, needsAttention, recentSignups, thresholds, returning } = data;
   const engaged = counts.active + counts.online;
+  const tickets = data.tickets || { open: 0, closed: 0 };
 
   return (
     <div className="space-y-6">
+      {/* Support is a tab rather than another panel on the overview: the two are
+          about different work, and the ticket numbers are what get looked at
+          first thing in the morning. */}
+      <div className="flex gap-1 border-b border-[var(--color-line-strong)]" role="tablist">
+        {[
+          { id: 'overview', label: 'Overview' },
+          { id: 'tickets', label: 'Tickets', count: tickets.open },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-semibold transition ${
+              tab === t.id
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            {t.label}
+            {t.count > 0 && (
+              <span className="rounded-full bg-amber-500/20 px-1.5 text-[10px] font-bold text-amber-300">
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'tickets' ? (
+        <section>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {/* Pending first and in the warning tone: an unanswered ticket is the
+                one number here that is somebody waiting on us. */}
+            <StatCard
+              label="Pending tickets"
+              value={tickets.open}
+              tone={tickets.open > 0 ? 'warn' : 'good'}
+            />
+            <StatCard label="Closed tickets" value={tickets.closed} tone="good" />
+            <StatCard label="Total raised" value={tickets.open + tickets.closed} />
+          </div>
+
+          <p className="mt-4 text-sm text-muted">
+            {tickets.open === 0
+              ? 'Nothing is waiting on staff.'
+              : `${tickets.open} ticket${tickets.open === 1 ? '' : 's'} waiting for a reply.`}
+          </p>
+        </section>
+      ) : (
+        <>
       {/* Presence split */}
       <section>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -270,6 +324,8 @@ export default function AdminDashboard() {
         Presence is recorded on authenticated requests, throttled to one update every 5 minutes.
         Refreshes every 60 seconds.
       </p>
+        </>
+      )}
     </div>
   );
 }

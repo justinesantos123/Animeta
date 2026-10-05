@@ -51,11 +51,33 @@ export function AuthProvider({ children }) {
     return d.user;
   }, []);
 
-  const signup = useCallback(async (email, password, username) => {
-    const d = await api.signup(email, password, username);
+  /**
+   * Registers an account.
+   *
+   * Deliberately does NOT set the user. Signup does not issue a session: the
+   * address has to be confirmed first, and treating the returned account as a
+   * signed-in user here would show the site as though the account were usable.
+   *
+   * Returns the whole response so the caller can show the "check your email"
+   * step, and can fall back to the link itself when email is not configured.
+   */
+  const signup = useCallback(async (email, password, username, phone) => {
+    const d = await api.signup(email, password, username, phone);
+    if (d.user && !d.needsVerification) {
+      // Only the owner path signs in directly, because that account is trusted
+      // by configuration rather than by an email round trip.
+      setUser(d.user);
+      setGreeting({ name: preferredName(d.user), fresh: true });
+    }
+    return d;
+  }, []);
+
+  /** Spends a verification token and, if it works, signs the account in. */
+  const verifyEmail = useCallback(async (token) => {
+    const d = await api.verifyEmail(token);
     setUser(d.user);
     setGreeting({ name: preferredName(d.user), fresh: true });
-    return d.user;
+    return d;
   }, []);
 
   const logout = useCallback(async () => {
@@ -80,8 +102,18 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, login, signup, logout, greeting, dismissGreeting, refresh }),
-    [user, ready, login, signup, logout, greeting, dismissGreeting, refresh],
+    () => ({
+      user,
+      ready,
+      login,
+      signup,
+      verifyEmail,
+      logout,
+      greeting,
+      dismissGreeting,
+      refresh,
+    }),
+    [user, ready, login, signup, verifyEmail, logout, greeting, dismissGreeting, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

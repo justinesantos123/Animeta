@@ -7,9 +7,10 @@ const input =
   'w-full rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
 
 export default function Profile() {
-  const { user, ready } = useAuth();
+  const { user, ready, refresh } = useAuth();
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
 
@@ -17,6 +18,7 @@ export default function Profile() {
     if (!user) return;
     setUsername(user.username || '');
     setDisplayName(user.displayName || '');
+    setPhone(user.phone || '');
   }, [user]);
 
   async function onSubmit(e) {
@@ -24,8 +26,16 @@ export default function Profile() {
     setBusy(true);
     setMessage(null);
     try {
-      await api.updateProfile({ username: username.trim(), displayName: displayName.trim() });
-      // /auth/me is refetched on the next mount; refresh now so the nav updates.
+      await api.updateProfile({
+        username: username.trim(),
+        displayName: displayName.trim(),
+        // Sent as null rather than '' when cleared, so "remove my number" is a
+        // value the server stores as no number instead of an empty string.
+        phone: phone.trim() || null,
+      });
+      // The nav shows the username, and /auth/me is only refetched on mount, so
+      // the session is re-read here rather than waiting for a reload.
+      await refresh();
       setMessage({ ok: true, text: 'Saved.' });
     } catch (err) {
       setMessage({ ok: false, text: err.message });
@@ -99,8 +109,32 @@ export default function Profile() {
           </p>
         </div>
 
+        <div>
+          <label htmlFor="p-phone" className="mb-1 block text-xs font-medium text-muted">
+            Phone number <span className="text-faint">(optional)</span>
+          </label>
+          <input
+            id="p-phone"
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            className={input}
+            placeholder="+63 917 123 4567"
+            aria-describedby="p-phone-help"
+          />
+          <p id="p-phone-help" className="mt-1 text-[11px] text-muted">
+            Staff can see this if they need to reach you. It is never verified: no code is sent to
+            it and no message ever is. Leave it blank if you would rather not.
+          </p>
+        </div>
+
         <div className="rounded-[var(--radius-control)] bg-bg px-3 py-2 text-xs text-muted">
           Email <span className="text-text">{user.email}</span> (cannot be changed here)
+          {user.emailVerified === false && (
+            <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+              not confirmed
+            </span>
+          )}
         </div>
 
         {message && (

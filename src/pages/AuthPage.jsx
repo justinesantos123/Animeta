@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { api } from '../api';
 
 /** Only same-site paths, so `next` cannot be used as an open redirect. */
 function safeNext(value) {
@@ -20,8 +21,18 @@ export default function AuthPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
+  const [phone, setPhone] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // Shown instead of the form once an account exists but the address is not
+  // proved. Reached by signing up, and by trying to sign in with an address that
+  // was never confirmed.
+  const [awaiting, setAwaiting] = useState(null);
+  const [sentNotice, setSentNotice] = useState(null);
+  // Only ever set when email delivery is not configured, in which case the
+  // Worker hands the link back instead of mailing it.
+  const [manualLink, setManualLink] = useState(null);
 
   if (user) {
     return (
@@ -51,11 +62,48 @@ export default function AuthPage() {
   async function onSubmit(e) {
     e.preventDefault();
     setError(null);
+    setSentNotice(null);
     setBusy(true);
     try {
-      if (mode === 'login') await login(email, password);
-      else await signup(email, password, username.trim());
+      if (mode === 'login') {
+        await login(email, password);
+        navigate(next, { replace: true });
+        return;
+      }
+
+      const d = await signup(email, password, username.trim(), phone.trim());
+      if (d.needsVerification) {
+        setEmail(d.email || email);
+        setAwaiting(d.email || email);
+        setManualLink(d.verifyUrl ?? null);
+        return;
+      }
       navigate(next, { replace: true });
+    } catch (err) {
+      // An account that exists but was never confirmed comes back as 403 with a
+      // marker. It is not a wrong password, so it must not be shown as one.
+      if (err.needsVerification) {
+        setAwaiting(err.email || email);
+        setError(null);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resend() {
+    if (!awaiting) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const d = await api.resendVerification(awaiting);
+      setSentNotice(
+        d.sent
+          ? 'Sent. Check your inbox for a new confirmation link.'
+          : 'Email is not sending yet, so the link has to come from the site for now.',
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -65,6 +113,78 @@ export default function AuthPage() {
 
   const inputClass =
     'w-full rounded-[var(--radius-control)] bg-surface px-4 py-2.5 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
+
+  // The confirmation step replaces the form entirely. Nothing here asks for the
+  // password or a code: the link in the email is the whole proof.
+  if (awaiting) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-16 pb-24">
+        <div className="rounded-[var(--radius-card)] bg-surface p-7 ring-1 ring-[var(--color-line-strong)]">
+          <h1 className="text-xl font-bold">Confirm your email</h1>
+          <p className="mt-2 text-sm text-muted">
+            Your account is created, but it stays switched off until the address is confirmed. Open
+            the link we sent to <span className="font-semibold text-text">{awaiting}</span>.
+          </p>
+
+          {manualLink && (
+            <div className="mt-4 rounded-[var(--radius-control)] bg-accent/10 p-3 ring-1 ring-accent/40">
+              <p className="text-xs font-semibold text-accent">
+                Email delivery is not configured on this deployment
+              </p>
+              <p className="mt-1 text-[11px] text-muted">
+                No message can be sent yet, so here is the link directly. Add a
+                <code className="mx-1">RESEND_API_KEY</code> secret and real emails go out instead.
+              </p>
+              <a
+                href={manualLink}
+                className="mt-2 block break-all text-xs text-accent underline decoration-dotted hover:text-text"
+              >
+                {manualLink}
+              </a>
+            </div>
+          )}
+
+          {sentNotice && (
+            <p className="mt-4 rounded-[var(--radius-control)] bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300 ring-1 ring-emerald-500/30">
+              {sentNotice}
+            </p>
+          )}
+
+          {error && (
+            <p
+              role="alert"
+              className="mt-4 rounded-[var(--radius-control)] bg-[var(--color-danger)]/12 px-3 py-2 text-xs text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30"
+            >
+              {error}
+            </p>
+          )}
+
+          <div className="mt-5 space-y-2">
+            <button
+              type="button"
+              onClick={resend}
+              disabled={busy}
+              className="w-full rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-60"
+            >
+              {busy ? 'Sending…' : 'Send the link again'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAwaiting(null);
+                setManualLink(null);
+                setSentNotice(null);
+                setError(null);
+              }}
+              className="w-full rounded-[var(--radius-control)] bg-surface-2 px-4 py-2.5 text-sm font-semibold text-text transition hover:bg-surface-3"
+            >
+              Use a different address
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-md px-4 py-16 pb-24">
@@ -117,8 +237,36 @@ export default function AuthPage() {
               onChange={(e) => setEmail(e.target.value)}
               className={inputClass}
               placeholder="you@example.com"
+              aria-describedby={mode === 'signup' ? 'email-help' : undefined}
             />
+            {mode === 'signup' && (
+              <p id="email-help" className="mt-1 text-[11px] text-muted">
+                We send one confirmation link here. The account stays off until it is opened.
+              </p>
+            )}
           </div>
+
+          {mode === 'signup' && (
+            <div>
+              <label htmlFor="phone" className="mb-1 block text-xs font-medium text-muted">
+                Phone number <span className="text-faint">(optional)</span>
+              </label>
+              <input
+                id="phone"
+                type="tel"
+                autoComplete="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className={inputClass}
+                placeholder="+63 917 123 4567"
+                aria-describedby="phone-help"
+              />
+              <p id="phone-help" className="mt-1 text-[11px] text-muted">
+                Optional, and never verified. No code is sent to it and no message ever is. Only
+                your email is confirmed.
+              </p>
+            </div>
+          )}
 
           <div>
             <label htmlFor="password" className="mb-1 block text-xs font-medium text-muted">

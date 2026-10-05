@@ -71,12 +71,30 @@ check(
 );
 
 // --- Permission catalogue ----------------------------------------------------
-check('the catalogue has five permissions', PERMISSION_IDS.length === 5, String(PERMISSION_IDS.length));
-for (const id of ['catalog', 'announcements', 'notifications', 'users', 'upload']) {
+// The full set is written out rather than counted, so adding a permission
+// without deciding what it means here fails the suite instead of quietly
+// widening what a moderator can be granted.
+const EXPECTED = ['catalog', 'announcements', 'notifications', 'users', 'upload', 'tickets'];
+check(
+  'the catalogue has exactly the expected permissions',
+  PERMISSION_IDS.length === EXPECTED.length &&
+    EXPECTED.every((id) => PERMISSION_IDS.includes(id)),
+  PERMISSION_IDS.join(','),
+);
+for (const id of EXPECTED) {
   check(`catalogue contains ${id}`, PERMISSION_IDS.includes(id));
 }
 check('ids are unique', new Set(PERMISSION_IDS).size === PERMISSION_IDS.length);
-check('PERMISSIONS maps to the same set', Object.keys(PERMISSIONS).length === 5);
+check(
+  'PERMISSIONS maps to the same set',
+  Object.keys(PERMISSIONS).length === EXPECTED.length,
+  Object.keys(PERMISSIONS).join(','),
+);
+
+// Ticket handling is deliberately its own grant rather than folded into
+// notifications: one is a private reply about one account, the other is an
+// outbound broadcast to everybody.
+check('tickets is separate from notifications', PERMISSIONS.TICKETS !== PERMISSIONS.NOTIFICATIONS);
 
 // --- Upload is its own permission, not part of the catalog --------------------
 // The whole point of splitting these: a moderator who can add titles must not

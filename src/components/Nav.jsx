@@ -12,8 +12,22 @@ const LINKS = [
   { to: '/browse', label: 'Browse', icon: 'M4 4h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4zM4 10h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4zM4 16h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4z' },
   { to: '/search', label: 'Search', icon: 'M10 4a6 6 0 104.47 10.03l4.25 4.25 1.41-1.41-4.25-4.25A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z' },
   { to: '/announcements', label: 'News', icon: 'M3 5h18v12H7l-4 4V5zm2 2v8.2L6.2 13H19V7H5z' },
-  { to: '/watchlist', label: 'Library', icon: 'M4 4h3v16H4zm6.5 0h3v16h-3zM17 4h3v16h-3z' },
+  // Hidden for staff. A personal library is for people watching the site; staff
+  // are here to run it, and a watchlist on their nav suggests the two are the
+  // same activity. See also the /watchlist route, which turns staff away.
+  {
+    to: '/watchlist',
+    label: 'Library',
+    icon: 'M4 4h3v16H4zm6.5 0h3v16h-3zM17 4h3v16h-3z',
+    memberOnly: true,
+  },
 ];
+
+/** The links a given account should see. */
+function linksFor(role) {
+  if (STAFF.includes(role)) return LINKS.filter((l) => !l.memberOnly);
+  return LINKS;
+}
 
 function RoleBadge({ role }) {
   if (role === 'admin') {
@@ -88,6 +102,15 @@ function UserMenu() {
               Profile &amp; username
             </Link>
 
+            <Link
+              to="/support"
+              onClick={() => setOpen(false)}
+              className="block px-4 py-2 text-sm transition hover:bg-surface-2"
+              role="menuitem"
+            >
+              Support
+            </Link>
+
             {STAFF.includes(user.role) && (
               <Link
                 to="/kaedeentrans"
@@ -120,6 +143,9 @@ function UserMenu() {
 }
 
 export function TopNav() {
+  const { user } = useAuth();
+  const links = linksFor(user?.role);
+
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--color-line)] bg-[var(--color-bg)]/85 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5">
@@ -133,7 +159,7 @@ export function TopNav() {
         </Link>
 
         <nav className="hidden items-center gap-0.5 md:flex" aria-label="Primary">
-          {LINKS.map((l) => (
+          {links.map((l) => (
             <NavLink
               key={l.to}
               to={l.to}
@@ -192,13 +218,21 @@ export function TopNav() {
 }
 
 export function BottomNav() {
+  const { user } = useAuth();
+  const links = linksFor(user?.role);
+
   return (
     <nav
       aria-label="Primary mobile"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--color-line)] bg-[var(--color-bg)]/95 backdrop-blur-md md:hidden"
     >
-      <div className="grid grid-cols-5">
-        {LINKS.map((l) => (
+      {/* The grid is sized to the link count rather than fixed at five, so
+          dropping Library for staff does not leave a gap. */}
+      <div
+        className="grid"
+        style={{ gridTemplateColumns: `repeat(${links.length}, minmax(0, 1fr))` }}
+      >
+        {links.map((l) => (
           <NavLink
             key={l.to}
             to={l.to}

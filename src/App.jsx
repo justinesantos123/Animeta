@@ -12,6 +12,8 @@ import Search from './pages/Search';
 import Watchlist from './pages/Watchlist';
 import TitleDetail from './pages/TitleDetail';
 import AuthPage from './pages/AuthPage';
+import VerifyEmail from './pages/VerifyEmail';
+import Support from './pages/Support';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import Announcements from './pages/Announcements';
@@ -45,6 +47,10 @@ export default function App() {
               <Route path="/search" element={<Search />} />
               <Route path="/watchlist" element={<Watchlist />} />
               <Route path="/auth" element={<AuthPage />} />
+              {/* Lands from the signup confirmation email. The token is spent on
+                  arrival, so this is a one-shot page rather than a form. */}
+              <Route path="/verify-email" element={<VerifyEmail />} />
+              <Route path="/support" element={<Support />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/announcements" element={<Announcements />} />

@@ -83,3 +83,77 @@ export async function sendPasswordResetEmail(env, { to, resetUrl, expiresMinutes
     return { sent: false, reason: String(err) };
   }
 }
+
+/**
+ * The address-proving email sent after signup.
+ *
+ * Separate from the reset mail because it is a different event: this one proves
+ * the address belongs to whoever is registering, and a reset mail arriving at an
+ * address somebody else just claimed is not proof of anything.
+ *
+ * @returns {Promise<{sent: boolean, reason?: string, id?: string}>}
+ */
+export async function sendVerificationEmail(env, { to, verifyUrl, expiresMinutes }) {
+  if (!env.RESEND_API_KEY) {
+    return { sent: false, reason: 'RESEND_API_KEY is not configured' };
+  }
+  if (!env.MAIL_FROM) {
+    return { sent: false, reason: 'MAIL_FROM is not configured' };
+  }
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#0D0D0F;font-family:Inter,system-ui,-apple-system,'Segoe UI',sans-serif;color:#E8E8EF">
+    <div style="max-width:520px;margin:0 auto;background:#16161A;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:32px">
+      <p style="margin:0 0 4px;font-size:20px;font-weight:800;letter-spacing:-0.02em">
+        <span style="color:#7B61FF">ANI</span><span>META</span>
+      </p>
+      <h1 style="margin:24px 0 8px;font-size:22px;font-weight:700">Confirm your email</h1>
+      <p style="margin:0 0 24px;font-size:14px;line-height:1.6;color:#8A8A99">
+        Thanks for creating an Animeta account. Confirm this address to finish setting it up.
+        This link works once and expires in ${expiresMinutes} minutes.
+      </p>
+      <p style="margin:0 0 24px">
+        <a href="${verifyUrl}"
+           style="display:inline-block;background:#7B61FF;color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:13px 24px;border-radius:10px">
+          Confirm my email
+        </a>
+      </p>
+      <p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:#8A8A99">
+        If the button does not work, paste this into your browser:
+      </p>
+      <p style="margin:0 0 24px;font-size:12px;word-break:break-all;color:#7B61FF">${verifyUrl}</p>
+      <hr style="border:0;border-top:1px solid rgba(255,255,255,0.08);margin:24px 0">
+      <p style="margin:0;font-size:12px;line-height:1.6;color:#8A8A99">
+        If you did not create this account, you can ignore this email &mdash; nothing is activated.
+      </p>
+    </div>
+  </body>
+</html>`;
+
+  try {
+    const res = await fetch(RESEND_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.RESEND_API_KEY}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: env.MAIL_FROM,
+        to: [to],
+        subject: 'Confirm your Animeta email',
+        html,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      return { sent: false, reason: `Resend responded ${res.status}: ${detail.slice(0, 200)}` };
+    }
+
+    const data = await res.json().catch(() => ({}));
+    return { sent: true, id: data?.id };
+  } catch (err) {
+    return { sent: false, reason: String(err) };
+  }
+}

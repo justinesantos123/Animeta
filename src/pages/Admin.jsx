@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import UserAdmin from './UserAdmin';
 import AdminDashboard from '../components/AdminDashboard';
 import CatalogAdmin from '../components/CatalogAdmin';
+import TicketsPanel from '../components/TicketsPanel';
 import { AnnouncementManager } from '../components/Announcements';
 import { useNotifications } from '../context/NotificationsContext';
 
@@ -13,14 +14,21 @@ const STAFF = ['admin', 'moderator'];
  * Which permission each tab requires.
  *
  * Tabs are hidden rather than shown-then-refused, so a moderator sees the parts
- * of the console they can actually use instead of four tabs that mostly 403.
+ * of the console they can actually use instead of five tabs that mostly 403.
  * This is presentation only: every action is re-checked server-side, so
  * widening the client gains nothing.
+ *
+ * Members and Staff are separate tabs because they are different jobs. One
+ * combined "Users" list puts four staff accounts at the top of a page about
+ * members, and makes it ambiguous whether a permission toggle on screen applies
+ * to the person or to the row.
  */
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', permission: null, role: 'admin' },
   { id: 'catalog', label: 'Catalog', permission: 'catalog' },
-  { id: 'users', label: 'Users', permission: 'users' },
+  { id: 'members', label: 'Members', permission: 'users' },
+  { id: 'staff', label: 'Staff', permission: 'users' },
+  { id: 'tickets', label: 'Tickets', permission: 'tickets' },
   { id: 'announcements', label: 'Announcements', permission: 'announcements' },
 ];
 
@@ -123,9 +131,17 @@ export default function Admin() {
         <div className="mt-6">
           <AdminDashboard />
         </div>
-      ) : activeTab === 'users' ? (
+      ) : activeTab === 'tickets' ? (
         <div className="mt-6">
-          <UserAdmin canManage={granted.has('users')} />
+          <TicketsPanel mode="staff" canClose={isAdmin} />
+        </div>
+      ) : activeTab === 'members' || activeTab === 'staff' ? (
+        <div className="mt-6">
+          <UserAdmin
+            scope={activeTab}
+            canManage={granted.has('users')}
+            canEditRoles={isAdmin}
+          />
         </div>
       ) : (
         <div className="mt-6">

@@ -30,6 +30,11 @@ export const PERMISSIONS = {
   //
   // Admins hold it implicitly, as with everything else.
   UPLOAD: 'upload',
+  // Answering a member's support ticket is its own grant, separate from sending
+  // site-wide notifications. The two carry different risk: one is outbound
+  // broadcast to everybody, the other is a private reply into a conversation
+  // about one person's account.
+  TICKETS: 'tickets',
 };
 
 export const PERMISSION_IDS = Object.values(PERMISSIONS);

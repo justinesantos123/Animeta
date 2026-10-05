@@ -15,6 +15,20 @@ CREATE TABLE IF NOT EXISTS users (
   -- has one. Uniqueness is case-insensitive via idx_users_username on
   -- lower(username), since SQLite's UNIQUE is case-sensitive.
   username      TEXT NOT NULL,
+  -- Contact number staff may ask for. Never verified and never messaged: the
+  -- address is the only thing that is proved, so this carries no verified
+  -- column and no code is ever sent to it.
+  phone         TEXT,
+  -- Set once the address has been proved. NULL means unverified, and an
+  -- unverified account cannot sign in. Backfilled from created_at for accounts
+  -- that predate verification, so deploying it does not lock the owner out.
+  email_verified_at TEXT,
+  -- Only the SHA-256 hash of the in-flight verification token is stored, for
+  -- the same reason password_reset_tokens does: a leak of this table must not
+  -- hand out working verification links.
+  email_verify_token_hash TEXT,
+  email_verify_expires_at TEXT,
+  email_verify_sent_at TEXT,
   last_seen_at  TEXT,
   -- Short non-reversible code derived from the password. Lets an owner confirm
   -- "is this still the password I set?" without ever storing or revealing it.
@@ -33,6 +47,8 @@ deleted_by   TEXT,
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_users_deleted ON users(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_users_verified ON users(email_verified_at);
+CREATE INDEX IF NOT EXISTS idx_users_verify_token ON users(email_verify_token_hash);
 -- Case-insensitive uniqueness, which a plain UNIQUE on the column would not give.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(lower(username));
 
@@ -185,6 +201,51 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications(user_id, read_at);
 
+-- ------------------------------------------------------------------- tickets
+--
+-- A support request from a member to staff. Two tables rather than one, so a
+-- conversation is append-only: replies cannot be edited away, and closing a
+-- ticket is a status change rather than a deletion.
+--
+-- ON DELETE CASCADE because the ticket is part of the account it came from. When
+-- that account is purged the ticket goes with it rather than leaving a support
+-- history describing somebody who no longer has an account.
+CREATE TABLE IF NOT EXISTS tickets (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  subject     TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  -- Denormalised so the queue answers "how many are waiting" without a join,
+  -- which is the number the dashboard leads with.
+  message_count   INTEGER NOT NULL DEFAULT 0,
+  last_message_at TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at   TEXT,
+  closed_by   TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id, created_at DESC);
+
+-- One row per message. author_side is stored rather than derived, because a
+-- staff reply and a member reply are governed by different rules: only staff may
+-- put links in a ticket. Deriving it from the author's role at read time would
+-- change the meaning of old messages whenever somebody's role changed.
+CREATE TABLE IF NOT EXISTS ticket_messages (
+  id          TEXT PRIMARY KEY,
+  ticket_id   TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  author_id   TEXT REFERENCES users(id) ON DELETE SET NULL,
+  author_side TEXT NOT NULL CHECK (author_side IN ('member','staff')),
+  body        TEXT NOT NULL,
+  -- A fact about the message rather than something recomputed, so the record
+  -- says what was actually sent.
+  has_link    INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_id, created_at);
+
 -- One row per user per UTC day they were active. Lets us measure gaps between
 -- visits, which is what identifies someone returning after a long absence.
 -- A current-state column like last_seen_at cannot show a gap once it is gone.
@@ -281,4 +342,10 @@ INSERT OR IGNORE INTO permissions (id, label, description, sort_order) VALUES
   ('users', 'Manage users',
    'View the user list and reset someone''s password.', 40),
   ('upload', 'Upload video',
-   'Send a video file to the site and publish it to the catalog.', 50);
+   'Send a video file to the site and publish it to the catalog.', 50),
+  -- Support tickets. Kept separate from `notifications` on purpose: reading and
+  -- answering a member's problem is a different responsibility from pushing
+  -- site-wide news at people, and an admin may reasonably want to allow one
+  -- without the other.
+  ('tickets', 'Handle support tickets',
+   'Read, reply to and close support tickets raised by members.', 60);

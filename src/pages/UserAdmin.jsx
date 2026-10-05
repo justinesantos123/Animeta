@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
-import { DaysOffline, PresenceChip } from '../components/AdminDashboard';
-import { timeAgo } from '../utils/timeAgo';
+import { PresenceChip } from '../components/AdminDashboard';
 
 const INPUT =
   'w-full rounded-[var(--radius-control)] bg-bg px-3 py-2 text-sm text-text ring-1 ring-[var(--color-line-strong)] outline-none placeholder:text-muted focus:ring-2 focus:ring-accent';
@@ -65,7 +64,19 @@ function OneTimeSecret({ secret, label, onDismiss, hint }) {
   );
 }
 
-export default function UserAdmin({ canManage = false }) {
+/**
+ * One of the two account tabs.
+ *
+ * `scope` is 'members' or 'staff' and decides which accounts are listed and what
+ * the tab is for. The API is asked for that slice rather than the full list being
+ * fetched and filtered here, so the two tabs cannot drift apart or show a row
+ * from the other group.
+ *
+ * `canEditRoles` is admin. Granting and revoking is now any admin's job, not the
+ * owner's alone: the ability to promote somebody has to be reversible by whoever
+ * can promote, or the only way back is the owner.
+ */
+export default function UserAdmin({ canManage = false, canEditRoles = false, scope = 'members' }) {
   const { user } = useAuth();
   const [state, setState] = useState({
     users: [],
@@ -81,17 +92,19 @@ export default function UserAdmin({ canManage = false }) {
   const [creating, setCreating] = useState(false);
   const [newEmail, setNewEmail] = useState('');
   const [newUsername, setNewUsername] = useState('');
+  const [newPhone, setNewPhone] = useState('');
   const [newRole, setNewRole] = useState('user');
   const [showPasswords, setShowPasswords] = useState(false);
 
   const isOwner =
     state.ownerEmail && user && user.email.toLowerCase() === state.ownerEmail.toLowerCase();
+  const isStaffTab = scope === 'staff';
 
   const role = user?.role;
 
   const load = useCallback(async () => {
     try {
-      const d = await api.listUsers();
+      const d = await api.listUsers(scope);
       // Pending deletions are a separate endpoint, and only admins may read it,
       // so a moderator with the "users" grant gets an empty list rather than an
       // error taking down the whole page.
@@ -106,7 +119,7 @@ export default function UserAdmin({ canManage = false }) {
     } finally {
       setLoading(false);
     }
-  }, [role]);
+  }, [role, scope]);
 
   useEffect(() => {
     load();
@@ -149,6 +162,14 @@ export default function UserAdmin({ canManage = false }) {
       });
     });
 
+  /**
+   * Every role, so a demotion is a choice from a list rather than a button that
+   * only ever moves somebody up.
+   *
+   * The single "next role" button this replaced could not demote: it cycled
+   * user -> moderator -> admin, so reversing a promotion meant the owner going
+   * into the database.
+   */
   const onRole = (target, role) =>
     withBusy(target.id, async () => {
       await api.setUserRole(target.id, role);
@@ -205,20 +226,23 @@ export default function UserAdmin({ canManage = false }) {
     });
   };
 
-  /** user -> moderator -> admin, capped at admin. */
-  const nextRole = (role) => (role === 'user' ? 'moderator' : 'admin');
-
   const onCreate = async (e) => {
     e.preventDefault();
     setCreating(true);
     setError(null);
     try {
-      const d = await api.createUser({ email: newEmail, role: newRole, username: newUsername.trim() });
+      const d = await api.createUser({
+        email: newEmail,
+        role: newRole,
+        username: newUsername.trim(),
+        phone: newPhone.trim(),
+      });
       if (d.password) {
         setSecret({ value: d.password, label: `Password for ${d.email}` });
       }
       setNewEmail('');
       setNewUsername('');
+      setNewPhone('');
       await load();
     } catch (err) {
       setError(err.message);
@@ -231,7 +255,7 @@ export default function UserAdmin({ canManage = false }) {
     return (
       <p className="flex items-center gap-3 py-8 text-sm text-muted">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-        Loading users…
+        Loading {isStaffTab ? 'staff' : 'members'}…
       </p>
     );
   }
@@ -241,9 +265,11 @@ export default function UserAdmin({ canManage = false }) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-bold">Users</h2>
+        <h2 className="text-lg font-bold">{isStaffTab ? 'Staff' : 'Members'}</h2>
         <p className="mt-1 text-sm text-muted">
-          Passwords are hashed and cannot be viewed. Reset one to hand a tester a working login.
+          {isStaffTab
+            ? 'Everyone who can act on the site. Roles decide which tabs they see; permissions decide what they can actually do.'
+            : 'Registered accounts. Passwords are hashed and cannot be viewed — reset one to hand somebody a working login.'}
         </p>
         {!state.mailConfigured && (
           <p className="mt-2 rounded-[var(--radius-control)] bg-surface px-3 py-2 text-xs text-muted ring-1 ring-[var(--color-line-strong)]">
@@ -287,20 +313,34 @@ export default function UserAdmin({ canManage = false }) {
         </div>
 
           <div>
-            <label htmlFor="new-user-username" className="mb-1 block text-xs font-medium text-muted">
-              Username (optional)
-            </label>
-            <input
-              id="new-user-username"
-              type="text"
-              maxLength={30}
-              pattern="[A-Za-z0-9][A-Za-z0-9_\-]{2,29}"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              className={INPUT}
-              placeholder="their_handle"
-            />
-          </div>
+          <label htmlFor="new-user-username" className="mb-1 block text-xs font-medium text-muted">
+            Username (optional)
+          </label>
+          <input
+            id="new-user-username"
+            type="text"
+            maxLength={30}
+            pattern="[A-Za-z0-9][A-Za-z0-9_\-]{2,29}"
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            className={INPUT}
+            placeholder="their_handle"
+          />
+        </div>
+        <div>
+          <label htmlFor="new-user-phone" className="mb-1 block text-xs font-medium text-muted">
+            Phone (optional)
+          </label>
+          <input
+            id="new-user-phone"
+            type="tel"
+            value={newPhone}
+            onChange={(e) => setNewPhone(e.target.value)}
+            className={INPUT}
+            placeholder="+63 917 123 4567"
+          />
+          <p className="mt-1 text-[11px] text-muted">Collected, never verified or messaged.</p>
+        </div>
         <div>
           <label htmlFor="new-user-role" className="mb-1 block text-xs font-medium text-muted">
             Role
@@ -356,11 +396,14 @@ export default function UserAdmin({ canManage = false }) {
             <tr className="border-b border-[var(--color-line-strong)] text-left text-xs uppercase tracking-wide text-muted">
               <th className={`${cell} font-medium`}>Username</th>
               <th className={`${cell} font-medium`}>Email</th>
+              <th className={`${cell} font-medium`}>Phone</th>
               <th className={`${cell} font-medium`}>Role</th>
               <th className={`${cell} font-medium`}>Joined</th>
-              <th className={`${cell} font-medium`}>Watchlist</th>
-              <th className={`${cell} font-medium`}>Last active</th>
-              <th className={`${cell} font-medium`}>Days offline</th>
+              {/* Deliberately a presence state and nothing else. The old "last
+                  active" and "days offline" columns said how stale a record was,
+                  which prompted a reading of inactivity as a problem to correct
+                  rather than a fact about an account nobody is looking at. */}
+              <th className={`${cell} font-medium`}>Active now</th>
               {showPasswords && <th className={`${cell} font-medium`}>Password</th>}
               <th className={`${cell} font-medium`}>Actions</th>
             </tr>
@@ -378,22 +421,24 @@ export default function UserAdmin({ canManage = false }) {
                       owner
                     </span>
                   )}
+                  {/* Only false for accounts registered since verification was
+                      required and not yet confirmed. Those cannot sign in, so it
+                      is worth saying so here. */}
+                  {!u.emailVerified && (
+                    <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+                      unconfirmed
+                    </span>
+                  )}
                 </td>
+                <td className={`${cell} text-muted`}>{u.phone || '—'}</td>
                 <td className={cell}>
                   <span className={u.role === 'admin' ? 'text-accent' : 'text-muted'}>{u.role}</span>
                 </td>
                 <td className={`${cell} text-muted`}>
                   {u.createdAt ? new Date(u.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString() : '—'}
                 </td>
-                <td className={`${cell} text-muted`}>{u.watchlistCount}</td>
                 <td className={cell}>
-                  <span className="text-muted">{timeAgo(u.lastSeenAt)}</span>
-                </td>
-                <td className={cell}>
-                  <DaysOffline days={u.daysOffline} presence={u.presence} />
-                  <div className="mt-1">
-                    <PresenceChip presence={u.presence} />
-                  </div>
+                  <PresenceChip presence={u.presence} />
                 </td>
                 {showPasswords && (
                   <td className={cell}>
@@ -428,18 +473,27 @@ export default function UserAdmin({ canManage = false }) {
                       Send reset link
                     </button>
 
-                    {/* Deletion and role changes are owner-only. */}
-                    {isOwner && !u.isOwner && (
-                      <button
-                        type="button"
+                    {/* Role is a select rather than a promote/demote button pair, because a button
+                      that only cycles upward cannot express "make this a member
+                      again". The owner is fixed and its control is not rendered. */}
+                    {canEditRoles && !u.isOwner && (
+                      <select
+                        aria-label={`Role for ${u.username || u.email}`}
+                        value={u.role}
                         disabled={busyId === u.id}
-                        onClick={() => onRole(u, nextRole(u.role))}
-                        className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
+                        onChange={(e) => onRole(u, e.target.value)}
+                        className="rounded-[var(--radius-control)] bg-surface-2 px-2 py-1 text-xs font-semibold text-text ring-1 ring-[var(--color-line-strong)] outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
                       >
-                        {nextRole(u.role) === 'admin' ? 'Make admin' : 'Make moderator'}
-                      </button>
+                        <option value="user">Member</option>
+                        <option value="moderator">Moderator</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    )}
+                    {!canEditRoles && !u.isOwner && (
+                      <span className="text-[11px] text-faint">owner-only changes</span>
                     )}
 
+                    {/* Deletion is owner-only, and irreversible after the window. */}
                     {isOwner && !u.isOwner && u.id !== user?.id && (
                       <button
                         type="button"
@@ -452,9 +506,10 @@ export default function UserAdmin({ canManage = false }) {
                     )}
                   </div>
 
-                  {/* Permission grants, on their own row so the toggles have
-                      room. Only moderators have grants to give: an admin holds
-                      everything implicitly and cannot be restricted. */}
+{/* Permission grants, on their own row so the toggles have room. Only
+                       moderators have grants to give: an admin holds everything
+                       implicitly and cannot be restricted. Admin-level, matching
+                       the role control. */}
                   {u.role === 'moderator' && (
                     <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
                       {state.permissionCatalogue.map((p) => {
@@ -468,7 +523,7 @@ export default function UserAdmin({ canManage = false }) {
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={!isOwner || busyId === u.id}
+                              disabled={!canEditRoles || busyId === u.id}
                               onChange={(e) => onTogglePermission(u, p.id, e.target.checked)}
                               className="accent-[#7B61FF]"
                             />
@@ -491,8 +546,13 @@ export default function UserAdmin({ canManage = false }) {
       </div>
 
       <p className="text-[11px] text-muted">
-        You are {isOwner ? 'the owner' : canManage ? 'a moderator with user access' : 'read-only'}.
-        Only the owner can promote, demote, grant permissions or delete accounts.
+        {isOwner
+          ? 'You are the owner: you can change every role and permission, and delete accounts.'
+          : canEditRoles
+            ? 'You are an admin: you can change roles and permissions. Only the owner can delete an account.'
+            : canManage
+              ? 'You can view accounts and reset passwords. Changing roles needs an admin.'
+              : 'Read-only.'}
       </p>
 
       {/* Accounts inside their recovery window. Kept separate from the main

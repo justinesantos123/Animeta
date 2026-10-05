@@ -13,11 +13,22 @@ import {
   clearSessionCookie,
   COOKIE_NAME,
 } from './crypto.js';
-import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+  mailConfigured,
+} from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES, TITLE_TYPES as TITLE_TYPE_VALUES } from './access.js';
 import { parseEmbed, fetchEmbedMetadata, embedUrl as buildEmbedUrl } from './embed.js';
 import { parseEpisodeList, MAX_EPISODES_PER_IMPORT } from './episode-import.js';
+import {
+  validateSubject,
+  validateMessage,
+  validatePhone,
+  MAX_TICKET_MESSAGES,
+  MAX_OPEN_TICKETS_PER_USER,
+} from './tickets.js';
 import {
   handleCreateUpload,
   handleFinaliseUpload,
@@ -35,6 +46,7 @@ import {
   isRestorable,
   isPurgeable,
   sqlTimestamp,
+  parseSqlDate,
 } from './permissions.js';
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -109,7 +121,8 @@ async function getUser(request, env) {
   if (!payload?.sub) return null;
 
   const row = await env.DB.prepare(
-    `SELECT id, email, username, role, display_name, last_seen_at, deleted_at, purge_after
+    `SELECT id, email, username, role, display_name, phone, email_verified_at,
+            last_seen_at, deleted_at, purge_after
      FROM users WHERE id = ?`,
   )
     .bind(payload.sub)
@@ -120,6 +133,12 @@ async function getUser(request, env) {
   // here means every gated route rejects it at once, rather than each handler
   // having to remember to check. The restore flow does not go through a session.
   if (row.deleted_at) return null;
+
+  // A session cannot exist for an unverified account through signup or login --
+  // both refuse before setting a cookie -- but the check belongs here too. This
+  // is the single point every gated route passes through, so an unproved address
+  // is refused everywhere even if some other path manages to mint a token.
+  if (!row.email_verified_at) return null;
 
   // Any authenticated request counts as being present. This is what the
   // dashboard's active/offline figures are derived from.
@@ -549,11 +568,11 @@ async function deriveUsername(env, email) {
 
   for (let attempt = 0; attempt < 50; attempt++) {
     if (candidate.length < 3) candidate = `${candidate}user`;
-    // deleted_at IS NULL: a pending-deletion account still holds its username,
-    // and it will reclaim it if it is restored, so that handle must stay
-    // reserved while the window is open.
+    // No deleted_at filter, matching the unique index: an account inside its
+    // recovery window still holds its handle, and the insert would fail if the
+    // derived name collided with one.
     const taken = await env.DB.prepare(
-      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND deleted_at IS NULL',
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
     )
       .bind(candidate)
       .first();
@@ -565,6 +584,90 @@ async function deriveUsername(env, email) {
 
 function validPassword(pw) {
   return typeof pw === 'string' && pw.length >= 8 && pw.length <= 200;
+}
+
+// --------------------------------------------------------- email verification
+//
+// The address is the only thing proved at signup. The phone number is collected
+// and never verified, because nothing is ever sent to it.
+//
+// A verification link is a bearer credential: it proves control of the address,
+// so only its hash is stored. The plaintext exists in the recipient's inbox and,
+// when email is not configured, in the signup response so the flow can be
+// completed at all.
+
+/** How long a verification link stays usable. */
+const VERIFY_TTL_MINUTES = 24 * 60;
+
+/**
+ * Issues a fresh verification token and mails the link.
+ *
+ * Replaces any token already in flight rather than adding a second row, so an
+ * address that has been sent four links has exactly one live one and the rest
+ * have stopped working.
+ */
+async function issueEmailVerification(env, user) {
+  const token = generateResetToken();
+  const hash = await hashResetToken(token);
+  const expiresAt = sqlTimestamp(Date.now() + VERIFY_TTL_MINUTES * 60000);
+
+  await env.DB.prepare(
+    `UPDATE users SET email_verify_token_hash = ?, email_verify_expires_at = ?,
+       email_verify_sent_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(hash, expiresAt, user.id)
+    .run();
+
+  const verifyUrl = `${String(env.APP_URL || '').replace(/\/+$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
+
+  const mail = await sendVerificationEmail(env, {
+    to: user.email,
+    verifyUrl,
+    expiresMinutes: VERIFY_TTL_MINUTES,
+  });
+
+  return { verifyUrl, mail };
+}
+
+/** Marks the address proved and clears the now-spent token in one statement. */
+async function markEmailVerified(env, userId) {
+  await env.DB.prepare(
+    `UPDATE users SET email_verified_at = datetime('now'), email_verify_token_hash = NULL,
+       email_verify_expires_at = NULL
+     WHERE id = ?`,
+  )
+    .bind(userId)
+    .run();
+}
+
+/** A short shape for the "not verified yet" response the client renders. */
+function verificationPending(user, reason) {
+  return json({ error: reason, needsVerification: true, email: user.email }, 403);
+}
+
+/**
+ * The user object every session-establishing response carries.
+ *
+ * One shape, from login, from verification and from /auth/me. They used to
+ * differ, and the difference was invisible until it cost something: /auth/me sent
+ * the resolved permission list and login did not, so signing in from the form
+ * left the client holding a user with no permissions, and the staff console
+ * rendered as a single Dashboard tab. Refreshing the page fixed it, which is why
+ * it looked like a styling problem rather than a data one.
+ */
+async function sessionUser(env, user) {
+  const permissions = await loadPermissions(env, user);
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    displayName: user.display_name ?? null,
+    phone: user.phone ?? null,
+    emailVerified: Boolean(user.email_verified_at),
+    role: user.role,
+    permissions: [...permissions.set],
+  };
 }
 
 // ---------------------------------------------------------------- routes
@@ -629,12 +732,29 @@ async function handleSignup(request, env) {
     return json({ error: 'An account with that email already exists' }, 409);
   }
 
+  // Every row counts, including accounts inside their recovery window: the
+  // unique index on lower(username) covers those too, so treating the handle as
+  // free here would only turn into a 500 from D1 on the insert. See the same
+  // check in handleUpdateProfile.
   const nameTaken = await env.DB.prepare(
-    'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND deleted_at IS NULL',
+    'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
   )
     .bind(nameCheck.username)
     .first();
-  if (nameTaken) return json({ error: 'That username is already taken' }, 409);
+  if (nameTaken) {
+    return json(
+      {
+        error:
+          'That username is already taken. If it belonged to an account that was deleted, it stays reserved until that account\'s recovery window closes.',
+      },
+      409,
+    );
+  }
+
+  // Phone is collected but never verified. Optional, and a blank field is stored
+  // as NULL rather than an empty string so "no number" has one representation.
+  const phoneCheck = validatePhone(body.phone);
+  if (phoneCheck.error) return json({ error: phoneCheck.error }, 400);
 
   const id = randomHex(16);
   const salt = randomSalt();
@@ -643,27 +763,165 @@ async function handleSignup(request, env) {
   // registration order -- otherwise whoever signs up first becomes owner.
   const role = ownerEmails(env).includes(email) ? 'admin' : 'user';
 
+  // The owner is trusted by configuration rather than by an email round trip, so
+  // their account starts proved. Anyone else has to click the link.
+  const isOwner = ownerEmails(env).includes(email);
+
   await env.DB.prepare(
-    'INSERT INTO users (id, email, username, display_name, password_hash, salt, role, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    `INSERT INTO users (id, email, username, display_name, phone, password_hash, salt, role,
+                        password_fingerprint, email_verified_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
       email,
       nameCheck.username,
       body.displayName ? String(body.displayName).slice(0, 60) : null,
+      phoneCheck.phone,
       hash,
       salt,
       role,
       await passwordFingerprint(password),
+      isOwner ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null,
     )
     .run();
 
-  const token = await signToken({ sub: id, role }, env.SESSION_SECRET);
+  if (isOwner) {
+    const token = await signToken({ sub: id, role }, env.SESSION_SECRET);
+    return json(
+      { user: { id, email, username: nameCheck.username, role, emailVerified: true } },
+      201,
+      { 'set-cookie': sessionCookie(token) },
+    );
+  }
+
+  // No session cookie here on purpose. The account exists but is not usable
+  // until the address is proved, and handing out a session now would let an
+  // unverified account straight into the catalog.
+  const { verifyUrl, mail } = await issueEmailVerification(env, {
+    id,
+    email,
+  });
+
   return json(
-    { user: { id, email, username: nameCheck.username, role } },
+    {
+      needsVerification: true,
+      email,
+      user: { id, email, username: nameCheck.username, role, emailVerified: false },
+      // When email is not configured the link comes back here instead, so the
+      // flow can still be completed. Same fallback the password reset uses. It
+      // is returned only because RESEND_API_KEY is absent: with it set, mail.sent
+      // is true and verifyUrl is not included in the response.
+      ...(mail.sent ? {} : { verifyUrl, mailReason: mail.reason, mailConfigured: false }),
+    },
     201,
-    { 'set-cookie': sessionCookie(token) },
   );
+}
+
+/**
+ * POST /api/auth/verify-email — spend a verification token.
+ *
+ * Hashes whatever arrives and looks it up by hash, so the table never holds a
+ * token that could be replayed from a database dump.
+ */
+async function handleVerifyEmail(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const token = String(body.token ?? '').trim();
+  if (!token) return json({ error: 'That verification link is incomplete' }, 400);
+
+  const hash = await hashResetToken(token);
+  const row = await env.DB.prepare(
+    `SELECT id, email, username, role, phone, email_verified_at, email_verify_expires_at, deleted_at
+     FROM users WHERE email_verify_token_hash = ?`,
+  )
+    .bind(hash)
+    .first();
+
+  if (!row) {
+    // Same message for unknown, already-used and expired. A distinct message for
+    // each would let somebody probe whether a token was ever issued.
+    return json({ error: 'That verification link is not valid. Ask for a new one.' }, 400);
+  }
+
+  if (row.email_verified_at) {
+    return json(
+      { error: 'That address is already confirmed', email: row.email, alreadyVerified: true },
+      400,
+    );
+  }
+
+  const deadline = parseSqlDate(row.email_verify_expires_at);
+  if (deadline === null || Date.now() >= deadline) {
+    return json({ error: 'That verification link has expired. Ask for a new one.' }, 400);
+  }
+
+  if (row.deleted_at) {
+    return json({ error: 'That account is being deleted', needsVerification: true }, 409);
+  }
+
+  await markEmailVerified(env, row.id);
+
+  // Signs in on success, because the person holding the link has just proved
+  // they own the inbox and the alternative is making them type their password
+  // immediately after registering.
+  const session = await signToken({ sub: row.id, role: row.role }, env.SESSION_SECRET);
+  return json(
+    { verified: true, user: await sessionUser(env, row) },
+    200,
+    { 'set-cookie': sessionCookie(session) },
+  );
+}
+
+/**
+ * POST /api/auth/resend-verification — mail another link.
+ *
+ * Reached from the sign-in form when an account exists but is unverified, so it
+ * is keyed on the address and always reports the same thing either way: telling
+ * the caller "no such account" would turn this into a way of finding out which
+ * addresses are registered.
+ */
+async function handleResendVerification(request, env) {
+  const limit = await hitRateLimit(env, request, 'resend-verification', {
+    limit: 5,
+    windowSeconds: 600,
+  });
+  if (!limit.allowed) {
+    return json(
+      { error: 'Too many requests from here. Try again later.' },
+      429,
+      { 'retry-after': String(limit.retryAfter) },
+    );
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const email = String(body.email ?? '').trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return json({ error: 'Enter a valid email address' }, 400);
+
+  const row = await env.DB.prepare(
+    'SELECT id, email, email_verified_at FROM users WHERE email = ? AND deleted_at IS NULL',
+  )
+    .bind(email)
+    .first();
+
+  // Nothing sent, and nothing said, when there is nothing to do.
+  if (!row || row.email_verified_at) {
+    return json({ ok: true, sent: false });
+  }
+
+  const { mail } = await issueEmailVerification(env, row);
+  return json({ ok: true, sent: mail.sent, ...(mail.sent ? {} : { reason: mail.reason }) });
 }
 
 async function handleLogin(request, env) {
@@ -689,8 +947,8 @@ async function handleLogin(request, env) {
   const password = String(body.password ?? '');
 
   const row = await env.DB.prepare(
-    `SELECT id, email, username, display_name, password_hash, salt, role,
-            deleted_at, purge_after
+    `SELECT id, email, username, display_name, password_hash, salt, role, phone,
+            email_verified_at, deleted_at, purge_after
      FROM users WHERE email = ?`,
   )
     .bind(email)
@@ -723,6 +981,18 @@ async function handleLogin(request, env) {
 
   if (!ok) return json({ error: 'Invalid email or password' }, 401);
 
+  // An unproved address is refused here, and only after the password has been
+  // checked. The order matters: refusing sooner would let anyone find out
+  // whether an address is registered and unverified, without knowing the
+  // password.
+  //
+  // Nothing is asked for at the sign-in form itself. This returns a plain
+  // "confirm your email" and nothing else, so signing in stays email and
+  // password; the address is proved once, at signup, not on every visit.
+  if (!row.email_verified_at) {
+    return verificationPending(row, 'Confirm your email address before signing in');
+  }
+
   // A deleted account is restored rather than refused, because the caller just
   // proved they still hold the account's password. That is the same proof the
   // deletion was made under, so it needs no emailed token.
@@ -748,13 +1018,7 @@ async function handleLogin(request, env) {
     return json(
       {
         restored: true,
-        user: {
-          id: row.id,
-          email: row.email,
-          username: row.username,
-          displayName: row.display_name,
-          role: row.role,
-        },
+        user: await sessionUser(env, row),
       },
       200,
       { 'set-cookie': sessionCookie(restored) },
@@ -763,15 +1027,7 @@ async function handleLogin(request, env) {
 
   const token = await signToken({ sub: row.id, role: row.role }, env.SESSION_SECRET);
   return json(
-    {
-      user: {
-        id: row.id,
-        email: row.email,
-        username: row.username,
-        displayName: row.display_name,
-        role: row.role,
-      },
-    },
+    { user: await sessionUser(env, row) },
     200,
     { 'set-cookie': sessionCookie(token) },
   );
@@ -785,21 +1041,7 @@ async function handleMe(request, env) {
   const user = await getUser(request, env);
   if (!user) return json({ user: null }, 200);
 
-  const permissions = await loadPermissions(env, user);
-
-  return json({
-    user: {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      role: user.role,
-      displayName: user.display_name,
-      // Sent to the client so the staff console can hide actions the viewer
-      // cannot perform. This is convenience only: every action is re-checked
-      // server-side, so a tampered client gains nothing.
-      permissions: [...permissions.set],
-    },
-  });
+  return json({ user: await sessionUser(env, user) });
 }
 
 async function handleListTitles(request, env, url) {
@@ -1388,20 +1630,36 @@ async function handleAdminSendResetLink(request, env, targetId) {
   });
 }
 
-async function handleListUsers(request, env) {
+/**
+ * The account list, split by who the account belongs to.
+ *
+ * `scope` is members | staff | all. The console has two separate tabs and each
+ * asks for its own slice, so the two groups of accounts are never read as one
+ * list where the first four rows happen to be staff. An unknown scope is refused
+ * rather than defaulted: silently returning everything would hand a tab
+ * labelled "Members" the admin accounts too.
+ */
+async function handleListUsers(request, env, scope) {
   const auth = await requirePermission(request, env, 'users');
   if (auth.error) return auth.error;
+
+  const where = { members: "u.role = 'user'", staff: "u.role IN ('admin','moderator')" };
+  if (scope !== 'all' && !where[scope]) {
+    return json({ error: 'scope must be members, staff or all' }, 400);
+  }
 
   // Deleted accounts are excluded: this is the list of accounts that exist as
   // far as the product is concerned. /api/admin/users/deleted is where pending
   // deletions are reviewed.
   const { results } = await env.DB.prepare(
-    `SELECT u.id, u.email, u.username, u.role, u.display_name, u.created_at, u.password_fingerprint, u.last_seen_at,
+    `SELECT u.id, u.email, u.username, u.role, u.display_name, u.phone, u.created_at,
+            u.password_fingerprint, u.last_seen_at, u.email_verified_at,
             (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.id) AS watchlist_count,
-            (SELECT MAX(last_played_at) FROM playback_records p WHERE p.user_id = u.id) AS last_active,
+            (SELECT COUNT(*) FROM tickets t WHERE t.user_id = u.id AND t.status = 'open')
+              AS open_tickets,
             (SELECT GROUP_CONCAT(p2.permission) FROM user_permissions p2 WHERE p2.user_id = u.id) AS granted
      FROM users u
-     WHERE u.deleted_at IS NULL
+     WHERE u.deleted_at IS NULL ${where[scope] ? `AND ${where[scope]}` : ''}
      ORDER BY u.created_at ASC`,
   ).all();
 
@@ -1439,7 +1697,11 @@ async function handleListUsers(request, env) {
       displayName: u.display_name,
       createdAt: u.created_at,
       watchlistCount: u.watchlist_count,
-      lastActive: u.last_active,
+      openTickets: u.open_tickets,
+      phone: u.phone,
+      // False only for accounts that signed up since verification was required
+      // and have not clicked their link yet.
+      emailVerified: Boolean(u.email_verified_at),
       isOwner: owners.includes(u.email.toLowerCase()),
       lastSeenAt: u.last_seen_at,
       daysOffline: daysSince(u.last_seen_at),
@@ -1482,7 +1744,7 @@ async function handleCreateUser(request, env) {
     const nameCheck = validateUsername(body.username);
     if (nameCheck.error) return json({ error: nameCheck.error }, 400);
     const taken = await env.DB.prepare(
-      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND deleted_at IS NULL',
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?)',
     )
       .bind(nameCheck.username)
       .first();
@@ -1538,8 +1800,13 @@ async function handleCreateUser(request, env) {
   const salt = randomSalt();
   const hash = await hashPassword(password, salt);
 
+  const phoneCheck = validatePhone(body.phone);
+  if (phoneCheck.error) return json({ error: phoneCheck.error }, 400);
+
   await env.DB.prepare(
-    'INSERT INTO users (id, email, username, password_hash, salt, role, display_name, password_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    `INSERT INTO users (id, email, username, password_hash, salt, role, display_name, phone,
+                        password_fingerprint, email_verified_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -1549,7 +1816,13 @@ async function handleCreateUser(request, env) {
       salt,
       role,
       body.displayName ?? null,
+      phoneCheck.phone,
       await passwordFingerprint(password),
+      // Marked proved on creation. Staff set a known password and hand it over
+      // directly, so there is no inbox to prove and no link anybody could click.
+      // Requiring a verification round trip here would just make staff unable to
+      // set up an account for somebody.
+      new Date().toISOString().replace('T', ' ').slice(0, 19),
     )
     .run();
 
@@ -1557,7 +1830,7 @@ async function handleCreateUser(request, env) {
 
   return json(
     {
-      user: { id, email, username, role },
+      user: { id, email, username, role, emailVerified: true },
       // Returned exactly once so the admin can hand it over. Never stored readable.
       password: supplied ? null : password,
     },
@@ -1565,9 +1838,18 @@ async function handleCreateUser(request, env) {
   );
 }
 
-/** Owner only: promote or demote an admin. */
+/**
+ * Set a role, including demoting a moderator back to a member.
+ *
+ * Admin, not owner-only. The owner tier exists to protect the account that
+ * cannot be replaced, not to keep the ordinary admin work of running the site to
+ * one person: an admin who can promote a moderator must also be able to reverse
+ * it, or the only way back is the owner.
+ *
+ * The owner is still off limits in both directions.
+ */
 async function handleSetRole(request, env, targetId) {
-  const auth = await requireOwner(request, env);
+  const auth = await requireAdmin(request, env);
   if (auth.error) return auth.error;
 
   let body;
@@ -1583,21 +1865,40 @@ async function handleSetRole(request, env, targetId) {
   }
 
   const owners = ownerEmails(env);
-  const target = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?')
+  const target = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?')
     .bind(targetId)
     .first();
   if (!target) return json({ error: 'User not found' }, 404);
 
-  // Guard against the owner locking themselves out of the admin tier.
+  // The owner is fixed at the top of the hierarchy. Any admin attempting it --
+  // including the owner demoting themselves -- is refused, so the one account
+  // that cannot be recreated cannot be locked out of the admin tier.
   if (owners.includes(target.email.toLowerCase()) && role !== 'admin') {
     return json({ error: 'The owner cannot be demoted' }, 400);
+  }
+
+  // An admin cannot strip another admin of their role. Self-demotion is allowed,
+  // because an admin handing the job on is a normal thing to want and they can
+  // always be promoted back. The asymmetry is deliberate: a demotion applied to
+  // a peer is an attack, and the owner can always reverse it.
+  if (
+    target.role === 'admin' &&
+    role !== 'admin' &&
+    target.id !== auth.user.id &&
+    !owners.includes(auth.user.email.toLowerCase())
+  ) {
+    return json(
+      { error: 'Only the site owner can demote another admin' },
+      403,
+    );
   }
 
   await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(role, target.id).run();
 
   // Moving off the moderator tier drops its grants with it, so a later
   // re-promotion starts from nothing rather than silently restoring permissions
-  // that were granted weeks earlier.
+  // that were granted weeks earlier. This is what makes demoting a moderator a
+  // real revocation rather than a rename.
   if (role !== 'moderator') {
     await env.DB.prepare('DELETE FROM user_permissions WHERE user_id = ?')
       .bind(target.id)
@@ -1612,11 +1913,14 @@ async function handleSetRole(request, env, targetId) {
 /**
  * Replaces a moderator's permissions wholesale.
  *
- * Admin only. Sending the full set each time rather than toggling individual
+ * Admin, matching handleSetRole: the ability to grant a permission is only
+ * meaningful alongside the ability to take it back.
+ *
+ * Sending the full set each time rather than toggling individual
  * rows, so the stored grants cannot drift from what the admin last saw.
  */
 async function handleSetPermissions(request, env, targetId) {
-  const auth = await requireOwner(request, env);
+  const auth = await requireAdmin(request, env);
   if (auth.error) return auth.error;
 
   let body;
@@ -2284,6 +2588,11 @@ async function handleListNotifications(request, env) {
     .bind(user.id)
     .all();
 
+  // Split by kind so the client can render two tabs without deciding what a
+  // "ticket" notification is. Counted here rather than in the browser so the
+  // badge matches what the API says exists.
+  const isTicket = (n) => n.kind === 'ticket';
+
   return json({
     notifications: results.map((n) => ({
       id: n.id,
@@ -2295,7 +2604,8 @@ async function handleListNotifications(request, env) {
       readAt: n.read_at,
       createdAt: n.created_at,
     })),
-    unread: results.filter((n) => !n.read_at).length,
+    unread: results.filter((n) => !n.read_at && !isTicket(n)).length,
+    ticketUnread: results.filter((n) => !n.read_at && isTicket(n)).length,
   });
 }
 
@@ -2312,17 +2622,423 @@ async function handleMarkRead(request, env, id) {
   return json({ ok: true });
 }
 
-async function handleMarkAllRead(request, env) {
+/**
+ * Marks read, optionally only one group.
+ *
+ * `scope` is normal | tickets | all. The bell has a tab per group, so "mark all
+ * read" next to the Tickets tab has to leave the ordinary notifications alone --
+ * otherwise reading a ticket silently clears everything else.
+ */
+async function handleMarkAllRead(request, env, scope) {
   const user = await getUser(request, env);
   if (!user) return json({ error: 'Authentication required' }, 401);
 
-  await env.DB.prepare(
-    "UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL",
-  )
-    .bind(user.id)
+  const which = scope === 'normal' || scope === 'tickets' ? scope : 'all';
+
+  let sql =
+    "UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL";
+  const binds = [user.id];
+
+  if (which !== 'all') {
+    if (which === 'tickets') {
+      sql += ' AND kind = ?';
+      binds.push('ticket');
+    } else {
+      // Anything that is not a ticket is an ordinary notification.
+      sql += " AND kind <> 'ticket'";
+    }
+  }
+
+  await env.DB.prepare(sql)
+    .bind(...binds)
     .run();
 
-  return json({ ok: true });
+  return json({ ok: true, scope: which });
+}
+
+// ------------------------------------------------------------------ tickets
+//
+// A support ticket is the one place a member talks to staff directly, so it has
+// its own rules rather than reusing the notification path: it is a conversation
+// rather than a broadcast, only staff may put links in it, and it ends by being
+// closed rather than by going quiet.
+//
+// Who is on which side is decided from the session on every call. `side` is never
+// taken from the request body, because a member could otherwise post themselves
+// the ability to send links.
+
+/** The side of the conversation an account is on. */
+function ticketSide(user) {
+  return STAFF_ROLES.includes(user.role) ? 'staff' : 'member';
+}
+
+function shapeTicket(row, extra = {}) {
+  return {
+    id: row.id,
+    subject: row.subject,
+    status: row.status,
+    messageCount: row.message_count,
+    lastMessageAt: row.last_message_at,
+    closedAt: row.closed_at,
+    createdAt: row.created_at,
+    ...extra,
+  };
+}
+
+/**
+ * GET /api/tickets
+ *
+ * Staff with the `tickets` grant see every ticket; a member sees only their own.
+ * The two are the same route rather than separate ones, because "my tickets" and
+ * "the queue" are the same resource seen from different sides.
+ */
+async function handleListTickets(request, env, url) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  const side = ticketSide(user);
+  const wantsStaffView = side === 'staff';
+
+  let status = url.searchParams.get('status');
+  if (status && !['open', 'closed', 'all'].includes(status)) status = 'all';
+
+  const conditions = [];
+  const binds = [];
+
+  if (wantsStaffView) {
+    // Only members' tickets belong to the staff queue. If a member raises one,
+    // it is still their conversation, so it lands in their list rather than
+    // becoming staff correspondence about them.
+    conditions.push("u.role = 'user'");
+  } else {
+    conditions.push('t.user_id = ?');
+    binds.push(user.id);
+  }
+
+  if (status === 'open' || status === 'closed') {
+    conditions.push('t.status = ?');
+    binds.push(status);
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT t.*, u.email AS requester_email, u.username AS requester_username
+     FROM tickets t JOIN users u ON u.id = t.user_id
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY t.last_message_at DESC
+     LIMIT 200`,
+  )
+    .bind(...binds)
+    .all();
+
+  return json({
+    tickets: results.map((row) =>
+      shapeTicket(row, {
+        requesterEmail: wantsStaffView ? row.requester_email : undefined,
+        requesterUsername: wantsStaffView ? row.requester_username : undefined,
+        mine: !wantsStaffView,
+      }),
+    ),
+    counts: await ticketCounts(env, user),
+  });
+}
+
+/** Open/closed totals, for the badge and the dashboard tile. */
+async function ticketCounts(env, user) {
+  const staff = ticketSide(user) === 'staff';
+  const scope = staff ? "u.role = 'user'" : 't.user_id = ?';
+  const binds = staff ? [] : [user.id];
+
+  const row = await env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN t.status = 'open' THEN 1 ELSE 0 END) AS open,
+       SUM(CASE WHEN t.status = 'closed' THEN 1 ELSE 0 END) AS closed,
+       COUNT(*) AS total
+     FROM tickets t JOIN users u ON u.id = t.user_id
+     WHERE ${scope}`,
+  )
+    .bind(...binds)
+    .first();
+
+  return {
+    open: Number(row?.open ?? 0),
+    closed: Number(row?.closed ?? 0),
+    total: Number(row?.total ?? 0),
+  };
+}
+
+/**
+ * POST /api/tickets — open a ticket.
+ *
+ * A member starts one. Staff can too, but their ticket is filed as a member's so
+ * it does not appear in their own queue unanswered.
+ */
+async function handleCreateTicket(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  // Throttled per account: opening tickets is how somebody would spam the staff
+  // notification fan-out, which writes a row for every member on the site.
+  const limit = await hitRateLimit(env, request, `ticket:new:${user.id}`, {
+    limit: 5,
+    windowSeconds: 3600,
+  });
+  if (!limit.allowed) {
+    return json(
+      { error: 'You have opened several tickets recently. Try again later.' },
+      429,
+      { 'retry-after': String(limit.retryAfter) },
+    );
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const side = ticketSide(user);
+  const subject = validateSubject(body.subject);
+  if (subject.error) return json({ error: subject.error }, 400);
+
+  const message = validateMessage(body.message, side);
+  if (message.error) return json({ error: message.error }, 400);
+
+  // An open cap, so one person cannot fill the queue. Closed tickets do not
+  // count: they are history, and capping history would push people to start a
+  // new ticket instead of replying to the one already open about the same thing.
+  const open = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM tickets WHERE user_id = ? AND status = 'open'",
+  )
+    .bind(user.id)
+    .first();
+  if (Number(open?.n ?? 0) >= MAX_OPEN_TICKETS_PER_USER) {
+    return json(
+      {
+        error: `You already have ${MAX_OPEN_TICKETS_PER_USER} tickets open. Wait for a reply, or close one you no longer need.`,
+      },
+      429,
+    );
+  }
+
+  const ticketId = randomHex(16);
+  const messageId = randomHex(16);
+
+  // Both rows in one batch: a ticket with no first message would be unreachable
+  // from the queue, because the queue is ordered by last_message_at.
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO tickets (id, user_id, subject, status, message_count, last_message_at)
+       VALUES (?, ?, ?, 'open', 1, datetime('now'))`,
+    ).bind(ticketId, user.id, subject.subject),
+    env.DB.prepare(
+      `INSERT INTO ticket_messages (id, ticket_id, author_id, author_side, body, has_link)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(messageId, ticketId, user.id, side, message.body, message.hasLink ? 1 : 0),
+  ]);
+
+  // Staff are told, not the member: the member is looking at the page.
+  const staffRecipients = await staffIds(env);
+  if (staffRecipients.length) {
+    await notify(env, {
+      userIds: staffRecipients,
+      kind: 'ticket',
+      title: `New support ticket: ${subject.subject}`,
+      body: `${user.email} asked for help.`,
+      // The staff console, not the ticket itself: the recipient of this
+      // notification is staff, and this is where they can act on it.
+      link: '/kaedeentrans',
+      actor: user.email,
+    });
+  }
+
+  return json({ ok: true, ticket: { id: ticketId, subject: subject.subject, status: 'open' } }, 201);
+}
+
+/**
+ * GET /api/tickets/:id — one ticket and its messages.
+ *
+ * A member may read only their own ticket. That is checked against the row's
+ * owner rather than filtered out of a list, so a member cannot read somebody
+ * else's conversation by guessing an id.
+ */
+async function handleGetTicket(request, env, id) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  const side = ticketSide(user);
+  const ticket = await env.DB.prepare(
+    `SELECT t.*, u.email AS requester_email, u.username AS requester_username
+     FROM tickets t JOIN users u ON u.id = t.user_id WHERE t.id = ?`,
+  )
+    .bind(id)
+    .first();
+
+  if (!ticket) return json({ error: 'Ticket not found' }, 404);
+
+  const owns = ticket.user_id === user.id;
+  const staff = side === 'staff';
+  // A member can only ever read their own. Staff can read a member's ticket but
+  // not a staff member's, which keeps the queue about members' problems.
+  const openedByStaff = (await roleOf(env, ticket.user_id)) !== 'user';
+  if (!owns && !(staff && !openedByStaff)) {
+    return json({ error: 'Ticket not found' }, 404);
+  }
+
+  const { results: messages } = await env.DB.prepare(
+    `SELECT m.id, m.author_side, m.body, m.has_link, m.created_at, u.email AS author_email
+     FROM ticket_messages m LEFT JOIN users u ON u.id = m.author_id
+     WHERE m.ticket_id = ? ORDER BY m.created_at ASC LIMIT ?`,
+  )
+    .bind(id, MAX_TICKET_MESSAGES)
+    .all();
+
+  return json({
+    ticket: shapeTicket(ticket, {
+      requesterEmail: staff ? ticket.requester_email : undefined,
+      requesterUsername: staff ? ticket.requester_username : undefined,
+      mine: owns,
+      // Staff need to know who they are talking to before they reply.
+      canReplyAsStaff: staff,
+    }),
+    messages: messages.map((m) => ({
+      id: m.id,
+      side: m.author_side,
+      body: m.body,
+      hasLink: Boolean(m.has_link),
+      createdAt: m.created_at,
+      authorEmail: staff || !owns ? m.author_email : undefined,
+    })),
+  });
+}
+
+/** The role behind an id, for the ownership check in handleGetTicket. */
+async function roleOf(env, userId) {
+  const row = await env.DB.prepare('SELECT role FROM users WHERE id = ?')
+    .bind(userId)
+    .first();
+  return row?.role ?? 'user';
+}
+
+/**
+ * POST /api/tickets/:id/messages — add a reply.
+ *
+ * Reopening: replying to a closed ticket moves it back to open. A member who was
+ * not satisfied reopening the conversation is the normal case, and silently
+ * dropping their message because staff had closed it would lose it.
+ */
+async function handleReplyTicket(request, env, id) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const side = ticketSide(user);
+  const ticket = await env.DB.prepare('SELECT * FROM tickets WHERE id = ?')
+    .bind(id)
+    .first();
+  if (!ticket) return json({ error: 'Ticket not found' }, 404);
+
+  const owns = ticket.user_id === user.id;
+  if (side === 'staff') {
+    const ownerRole = await roleOf(env, ticket.user_id);
+    if (ownerRole !== 'user') return json({ error: 'Ticket not found' }, 404);
+  } else if (!owns) {
+    return json({ error: 'Ticket not found' }, 404);
+  }
+
+  const message = validateMessage(body.message, side);
+  if (message.error) return json({ error: message.error }, 400);
+
+  const messageId = randomHex(16);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO ticket_messages (id, ticket_id, author_id, author_side, body, has_link)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(messageId, id, user.id, side, message.body, message.hasLink ? 1 : 0),
+    env.DB.prepare(
+      `UPDATE tickets SET message_count = message_count + 1,
+         last_message_at = datetime('now'),
+         status = 'open', closed_at = NULL, closed_by = NULL,
+         updated_at = datetime('now')
+       WHERE id = ?`,
+    ).bind(id),
+  ]);
+
+  // Tell the other side, and only the other side. Staff replying notifies the
+  // member; a member replying notifies staff, which is how a question waiting on
+  // a member's answer gets noticed rather than sitting open.
+  if (side === 'staff') {
+    await notify(env, {
+      userIds: [ticket.user_id],
+      kind: 'ticket',
+      title: `Staff replied: ${ticket.subject}`,
+      body: message.body.slice(0, 200),
+      link: '/support',
+      actor: user.email,
+    });
+  } else {
+    const ids = await staffIds(env);
+    if (ids.length) {
+      await notify(env, {
+        userIds: ids,
+        kind: 'ticket',
+        title: `Reply on ticket: ${ticket.subject}`,
+        body: `${user.email} replied.`,
+        link: '/kaedeentrans',
+        actor: user.email,
+      });
+    }
+  }
+
+  return json({ ok: true, message: { id: messageId, side }, status: 'open' }, 201);
+}
+
+/**
+ * POST /api/tickets/:id/close — mark it solved.
+ *
+ * Staff only. Closing is reversible: replying reopens it, so closing something
+ * by mistake is not a dead end.
+ */
+async function handleCloseTicket(request, env, id) {
+  const user = await getUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, 401);
+  if (ticketSide(user) !== 'staff') {
+    return json({ error: 'Staff access required' }, 403);
+  }
+
+  const ticket = await env.DB.prepare('SELECT * FROM tickets WHERE id = ?')
+    .bind(id)
+    .first();
+  if (!ticket) return json({ error: 'Ticket not found' }, 404);
+
+  const alreadyClosed = ticket.status === 'closed';
+  await env.DB.prepare(
+    `UPDATE tickets SET status = 'closed', closed_at = datetime('now'), closed_by = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(user.id, id)
+    .run();
+
+  if (!alreadyClosed) {
+    await logAdminAction(env, user.id, 'ticket.close', id, ticket.subject);
+    await notify(env, {
+      userIds: [ticket.user_id],
+      kind: 'ticket',
+      title: `Ticket closed: ${ticket.subject}`,
+      body: 'Staff marked this as resolved. Reply to reopen it if it is not.',
+      link: '/support',
+      actor: user.email,
+    });
+  }
+
+  return json({ ok: true, status: 'closed', alreadyClosed });
 }
 
 /**
@@ -2419,9 +3135,23 @@ async function handleDashboard(request, env) {
   const newThisWeek = enriched.filter((u) => (u.createdAt || '') >= since7).length;
   const newThisMonth = enriched.filter((u) => (u.createdAt || '') >= since30).length;
 
+  // Tickets are summarised rather than listed here; the tab itself reads the
+  // queue. Counted over member tickets only, matching what the queue shows.
+  const tickets = await env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN t.status = 'open' THEN 1 ELSE 0 END) AS open,
+       SUM(CASE WHEN t.status = 'closed' THEN 1 ELSE 0 END) AS closed
+     FROM tickets t JOIN users u ON u.id = t.user_id
+     WHERE u.role = 'user'`,
+  ).first();
+
   return json({
     generatedAt: new Date().toISOString(),
     counts,
+    tickets: {
+      open: Number(tickets?.open ?? 0),
+      closed: Number(tickets?.closed ?? 0),
+    },
     totals: {
       newThisWeek,
       newThisMonth,
@@ -2797,12 +3527,28 @@ async function handleUpdateProfile(request, env) {
   if (body.username !== undefined) {
     const nameCheck = validateUsername(body.username);
     if (nameCheck.error) return json({ error: nameCheck.error }, 400);
+    // Deliberately NOT filtered on deleted_at.
+    //
+    // The unique index on lower(username) covers every row, including accounts
+    // inside their recovery window, so a pending-deletion account still holds
+    // its handle. Checking only live rows said the name was free and the INSERT
+    // then failed on the index, which surfaced as a 500 rather than the "already
+    // taken" this is supposed to say. Excluding deleted rows here and including
+    // them at the index is the mismatch that caused it.
     const taken = await env.DB.prepare(
-      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND id <> ? AND deleted_at IS NULL',
+      'SELECT 1 AS x FROM users WHERE lower(username) = lower(?) AND id <> ?',
     )
       .bind(nameCheck.username, user.id)
       .first();
-    if (taken) return json({ error: 'That username is already taken' }, 409);
+    if (taken) {
+      return json(
+        {
+          error:
+            'That username is already taken. If it belongs to an account pending deletion, it stays reserved until the recovery window closes.',
+        },
+        409,
+      );
+    }
     username = nameCheck.username;
   }
 
@@ -2813,11 +3559,33 @@ async function handleUpdateProfile(request, env) {
         ? String(body.displayName).trim().slice(0, 60)
         : null;
 
-  await env.DB.prepare('UPDATE users SET username = ?, display_name = ? WHERE id = ?')
-    .bind(username, displayName, user.id)
+  // Phone is optional and never verified, so it is updated whenever it is sent.
+  // Absent means "leave it alone" rather than "clear it", so a client that does
+  // not know about the field cannot wipe somebody's number.
+  let phone = user.phone ?? null;
+  if (body.phone !== undefined) {
+    const phoneCheck = validatePhone(body.phone);
+    if (phoneCheck.error) return json({ error: phoneCheck.error }, 400);
+    phone = phoneCheck.phone;
+  }
+
+  await env.DB.prepare(
+    'UPDATE users SET username = ?, display_name = ?, phone = ? WHERE id = ?',
+  )
+    .bind(username, displayName, phone, user.id)
     .run();
 
-  return json({ user: { id: user.id, email: user.email, username, displayName, role: user.role } });
+  return json({
+    user: {
+      id: user.id,
+      email: user.email,
+      username,
+      displayName,
+      role: user.role,
+      phone,
+      emailVerified: true,
+    },
+  });
 }
 
 /**
@@ -2938,6 +3706,10 @@ export async function handleApi(request, env, url) {
       if (seg[2] === 'signup' && method === 'POST') return handleSignup(request, env);
       if (seg[2] === 'login' && method === 'POST') return handleLogin(request, env);
       if (seg[2] === 'logout' && method === 'POST') return handleLogout(request, env);
+      if (seg[2] === 'verify-email' && method === 'POST') return handleVerifyEmail(request, env);
+      if (seg[2] === 'resend-verification' && method === 'POST') {
+        return handleResendVerification(request, env);
+      }
       if (seg[2] === 'me' && method === 'GET') return handleMe(request, env);
       if (seg[2] === 'profile' && (method === 'PUT' || method === 'PATCH')) {
         return handleUpdateProfile(request, env);
@@ -2966,7 +3738,9 @@ export async function handleApi(request, env, url) {
       // /api/admin/users/:id/password          POST
       // /api/admin/users/:id/restore | purge   POST
       if (seg[2] === 'users' && seg.length === 3 && method === 'GET') {
-        return handleListUsers(request, env);
+        // ?scope=members|staff|all. Defaults to all, which is what the endpoint
+        // has always returned, so an older client keeps working.
+        return handleListUsers(request, env, url.searchParams.get('scope') || 'all');
       }
       if (seg[2] === 'users' && seg.length === 3 && method === 'POST') {
         return handleCreateUser(request, env);
@@ -3101,9 +3875,26 @@ export async function handleApi(request, env, url) {
 
     if (seg[1] === 'notifications') {
       if (seg.length === 2 && method === 'GET') return handleListNotifications(request, env);
-      if (seg.length === 2 && method === 'POST') return handleMarkAllRead(request, env);
+      if (seg.length === 2 && method === 'POST') {
+        return handleMarkAllRead(request, env, url.searchParams.get('scope') || 'all');
+      }
       if (seg.length === 3 && method === 'POST') return handleMarkRead(request, env, seg[2]);
     }
+
+    // Support tickets. One route for both sides: a member sees their own, staff
+    // see the queue. Who you are decides what comes back, never a parameter.
+    if (seg[1] === 'tickets') {
+      if (seg.length === 2 && method === 'GET') return handleListTickets(request, env, url);
+      if (seg.length === 2 && method === 'POST') return handleCreateTicket(request, env);
+      if (seg.length === 3 && method === 'GET') return handleGetTicket(request, env, seg[2]);
+      if (seg.length === 4 && seg[3] === 'messages' && method === 'POST') {
+        return handleReplyTicket(request, env, seg[2]);
+      }
+      if (seg.length === 4 && seg[3] === 'close' && method === 'POST') {
+        return handleCloseTicket(request, env, seg[2]);
+      }
+    }
+
 
     if (seg[1] === 'admin' && seg[2] === 'send') {
       if (seg.length === 3 && method === 'POST') return handleSendNotification(request, env);
