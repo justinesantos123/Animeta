@@ -12,7 +12,9 @@ const PRESENCE = {
   never: { label: 'Never signed in', dot: 'bg-white/30', chip: 'bg-white/10 text-muted' },
 };
 
-export function PresenceChip({ presence, daysOffline }) {
+// daysOffline is accepted so callers can pass a row straight through; the
+// label comes from PRESENCE alone.
+export function PresenceChip({ presence }) {
   const cfg = PRESENCE[presence] ?? PRESENCE.never;
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${cfg.chip}`}>
@@ -75,7 +77,7 @@ export default function AdminDashboard() {
     return (
       <p className="flex items-center gap-3 py-8 text-sm text-muted">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-        Loading activity…
+        Loading activityâ€¦
       </p>
     );
   }
@@ -100,8 +102,8 @@ export default function AdminDashboard() {
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="text-sm font-semibold">Presence</h2>
           <p className="text-[11px] text-muted">
-            Active = seen within {thresholds.activeDays}d · Idle = {thresholds.activeDays}–
-            {thresholds.idleDays}d · Offline = over {thresholds.idleDays}d
+            Active = seen within {thresholds.activeDays}d Â· Idle = {thresholds.activeDays}â€“
+            {thresholds.idleDays}d Â· Offline = over {thresholds.idleDays}d
           </p>
         </div>
 
@@ -160,7 +162,7 @@ export default function AdminDashboard() {
             <h2 className="text-sm font-semibold">Back after a month</h2>
             <p className="text-[11px] text-muted">
               Returned after {thresholds.returnAfterDays}+ days away
-              {data.autoReturnNotifications ? ' · auto-welcome on' : ' · auto-welcome off'}
+              {data.autoReturnNotifications ? ' Â· auto-welcome on' : ' Â· auto-welcome off'}
             </p>
           </div>
           <ul className="mt-3 overflow-hidden rounded-xl bg-surface ring-1 ring-white/10">
@@ -226,7 +228,7 @@ export default function AdminDashboard() {
                 className="flex items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0"
               >
                 <span className="min-w-0 flex-1 truncate text-sm">{u.email}</span>
-                <PresenceChip presence={u.presence} daysOffline={u.daysOffline} />
+                <PresenceChip presence={u.presence} />
                 <span className="w-16 shrink-0 text-right text-[11px] text-muted">
                   {timeAgo(u.lastSeenAt)}
                 </span>

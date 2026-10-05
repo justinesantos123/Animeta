@@ -4,7 +4,6 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { JSDOM, VirtualConsole } from 'jsdom';
 
-const DIST = new URL('../dist', import.meta.url).pathname.replace(/^\//, '').replace(/^\w:/, (m) => m);
 const distDir = new URL('../dist/', import.meta.url).pathname.replace(/^\//, '');
 
 const html = readFileSync(join(distDir, 'index.html'), 'utf8');
@@ -25,12 +24,16 @@ const routes = [
   '/',
   '/auth',
   '/forgot-password',
+  '/reset-password',
   '/reset-password?token=abc',
   '/search',
   '/watchlist',
   '/kaedeentrans',
   '/admin',
+  '/profile',
   '/title/solaris-requiem',
+  '/title/does-not-exist',
+  '/nope',
 ];
 let failed = 0;
 

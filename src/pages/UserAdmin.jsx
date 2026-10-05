@@ -116,7 +116,7 @@ export default function UserAdmin({ canDelete = false }) {
       setSecret({
         value: d.password,
         label: `New password for ${d.email}`,
-        hint: 'Shown once and never stored in readable form. If you lose it, reset again — nobody can retrieve it later.',
+        hint: 'Shown once and never stored in readable form. If you lose it, reset again â€” nobody can retrieve it later.',
       });
     });
 
@@ -173,7 +173,7 @@ export default function UserAdmin({ canDelete = false }) {
     return (
       <p className="flex items-center gap-3 py-8 text-sm text-muted">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-        Loading users…
+        Loading usersâ€¦
       </p>
     );
   }
@@ -263,7 +263,7 @@ export default function UserAdmin({ canDelete = false }) {
           disabled={creating}
           className="rounded-lg bg-cta px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
         >
-          {creating ? 'Creating…' : 'Create account'}
+          {creating ? 'Creatingâ€¦' : 'Create account'}
         </button>
         {newRole === 'admin' && !isOwner && (
           <p className="w-full text-[11px] text-muted">
@@ -311,7 +311,7 @@ export default function UserAdmin({ canDelete = false }) {
             {state.users.map((u) => (
               <tr key={u.id}>
                 <td className={cell}>
-                  <span className="text-text">@{u.username || '—'}</span>
+                  <span className="text-text">@{u.username || 'â€”'}</span>
                 </td>
                 <td className={cell}>
                   <span className="text-text">{u.email}</span>
@@ -325,7 +325,7 @@ export default function UserAdmin({ canDelete = false }) {
                   <span className={u.role === 'admin' ? 'text-accent' : 'text-muted'}>{u.role}</span>
                 </td>
                 <td className={`${cell} text-muted`}>
-                  {u.createdAt ? new Date(u.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString() : '—'}
+                  {u.createdAt ? new Date(u.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString() : 'â€”'}
                 </td>
                 <td className={`${cell} text-muted`}>{u.watchlistCount}</td>
                 <td className={cell}>
@@ -334,17 +334,17 @@ export default function UserAdmin({ canDelete = false }) {
                 <td className={cell}>
                   <DaysOffline days={u.daysOffline} presence={u.presence} />
                   <div className="mt-1">
-                    <PresenceChip presence={u.presence} daysOffline={u.daysOffline} />
+                    <PresenceChip presence={u.presence} />
                   </div>
                 </td>
                 {showPasswords && (
                   <td className={cell}>
                     <code className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-xs text-accent">
-                      {u.passwordFingerprint || '—'}
+                      {u.passwordFingerprint || 'â€”'}
                     </code>
                     {u.passwordHistory?.length > 0 && (
                       <p className="mt-1 text-[10px] text-muted">
-                        {u.passwordHistory[0].action.replace('user.password.', '')} ·{' '}
+                        {u.passwordHistory[0].action.replace('user.password.', '')} Â·{' '}
                         {u.passwordHistory[0].at?.replace(' ', 'T').slice(0, 10)}
                       </p>
                     )}

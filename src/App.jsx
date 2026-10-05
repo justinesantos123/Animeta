@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom';
 import { TopNav, BottomNav } from './components/Nav';
 import WelcomeBanner from './components/WelcomeBanner';
+import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider } from './context/AuthContext';
 import { CatalogProvider } from './context/CatalogContext';
 import { NotificationsProvider } from './context/NotificationsContext';
@@ -33,21 +34,24 @@ export default function App() {
         <WelcomeBanner />
 
         <main id="main">
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/search" element={<Search />} />
-            <Route path="/watchlist" element={<Watchlist />} />
-            <Route path="/auth" element={<AuthPage />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password" element={<ResetPassword />} />
-            <Route path="/announcements" element={<Announcements />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/kaedeentrans" element={<Admin />} />
-            {/* Old path kept working so existing bookmarks do not dead-end. */}
-            <Route path="/admin" element={<Navigate to="/kaedeentrans" replace />} />
-            <Route path="/title/:slug" element={<TitleDetail />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
+          {/* Anything below can fail without blanking the whole page. */}
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/search" element={<Search />} />
+              <Route path="/watchlist" element={<Watchlist />} />
+              <Route path="/auth" element={<AuthPage />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/announcements" element={<Announcements />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/kaedeentrans" element={<Admin />} />
+              {/* Old path kept working so existing bookmarks do not dead-end. */}
+              <Route path="/admin" element={<Navigate to="/kaedeentrans" replace />} />
+              <Route path="/title/:slug" element={<TitleDetail />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </ErrorBoundary>
         </main>
 
         <footer className="border-t border-white/5 bg-surface/40 pb-24 pt-10 md:pb-10">
