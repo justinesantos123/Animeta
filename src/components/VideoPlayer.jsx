@@ -11,10 +11,9 @@ import Hls from 'hls.js';
  *   3. MSE + Hls.isSupported()        -> attach hls.js.
  *   4. Neither                         -> surface a real error instead of hanging.
  *
- * No crossOrigin attribute: it forces a CORS media request, and hosts such as
- * archive.org send no Access-Control-Allow-Origin, so the browser rejects the
- * media with MEDIA_ERR_SRC_NOT_SUPPORTED even though the file plays fine
- * without it. Nothing here reads pixels or audio, so it is not needed.
+ * No crossOrigin attribute: it forces a CORS media request, and a same-origin
+ * stream route would then have to send Access-Control-Allow-Origin for no
+ * benefit. Nothing here reads pixels or audio, so it is not needed.
  */
 /**
  * True for a progressive file the browser can play directly.

@@ -49,9 +49,8 @@ CREATE TABLE IF NOT EXISTS titles (
   poster_url    TEXT,
   backdrop_url  TEXT,
   video_url     TEXT,
-  -- Where the video came from: 'archive' for a public-domain file resolved
-  -- from the Internet Archive, NULL for a hand-pasted URL. Lets the UI label
-  -- provenance instead of implying one source.
+  -- Where the video came from: 'upload' for a file the uploader sent, NULL for
+  -- a hand-pasted URL. Lets the UI label provenance instead of implying one source.
   video_source  TEXT,
   -- How the video is played. NULL is treated as 'file' so a row written before
   -- this column keeps working.
@@ -64,18 +63,10 @@ CREATE TABLE IF NOT EXISTS titles (
   -- never stored, so a paste cannot become stored XSS.
   embed_provider TEXT,
   embed_id       TEXT,
-  -- Which TMDB record this title was posted from, kept so availability can be
-  -- refreshed later without staff retyping the id. external_source is the TMDB
-  -- namespace ('movie' or 'tv') and is stored rather than inferred from `type`,
-  -- because staff can retype a title after posting.
-  external_id      TEXT,
-  external_source  TEXT,
-  -- Where the title can legally be watched, as a snapshot of TMDB's
-  -- JustWatch-backed availability at the time staff last ran a lookup.
-  -- Stored rather than fetched per view so a public catalog page never spends
-  -- TMDB quota, and because availability changes slowly enough that staff can
-  -- refresh it deliberately. NULL means "not looked up yet".
-  watch_providers TEXT,
+  -- The upload this title plays from, when a user supplied the file rather than
+  -- a link. ON DELETE SET NULL: removing an upload must not delete the catalog
+  -- row, only leave it without a video.
+  upload_id      TEXT REFERENCES uploads(id) ON DELETE SET NULL,
   subtitles_url TEXT,
   featured      INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -219,6 +210,36 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value      TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ------------------------------------------------------------------ uploads
+--
+-- User-supplied video. The file itself lives in R2, because a D1 row is capped
+-- far below what a video needs; this table holds metadata and a pointer to the
+-- object key.
+--
+-- The key is generated, never derived from the filename: a key built from the
+-- name would let anyone who guessed it fetch the file directly from R2 and skip
+-- both the access rules and the download accounting.
+--
+-- The object key is the only place the file path exists, so it is never returned
+-- to a client.
+CREATE TABLE IF NOT EXISTS uploads (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  object_key     TEXT NOT NULL UNIQUE,
+  original_name  TEXT,
+  bytes          INTEGER,
+  content_type   TEXT,
+  duration_secs  INTEGER,
+  width          INTEGER,
+  height         INTEGER,
+  status         TEXT NOT NULL DEFAULT 'pending',
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads(status, created_at);
 
 -- ---------------------------------------------------------------- permissions
 --

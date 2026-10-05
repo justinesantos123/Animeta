@@ -7,7 +7,6 @@ import VideoPlayer from '../components/VideoPlayer';
 import PlaybackGate from '../components/PlaybackGate';
 import { titleTypeLabel, isEpisodic } from '../lib/titleTypes';
 import TitleCard from '../components/TitleCard';
-import WatchProviders from '../components/WatchProviders';
 import EmbedPlayer from '../components/EmbedPlayer';
 
 export default function TitleDetail() {
@@ -113,22 +112,25 @@ export default function TitleDetail() {
   const gatedEpisode = episode?.locked ? episode : null;
   const playableEpisode = gatedEpisode ? null : episode;
 
-  // An embed is identified by provider plus id rather than a URL. Episodes can be
-  // embeds too, which is why this reads off whichever item is being played.
+  // An embed is identified by provider plus id, an upload by a stream URL the
+  // Worker issues per request. Episodes can carry either too, which is why this
+  // reads off whichever item is actually being played.
   const source = playableEpisode ?? item;
   const embedKind = source.videoKind === 'embed';
   const embedProvider = source.embedProvider;
   const embedId = source.embedId;
 
-  const streamUrl = playableEpisode ? playableEpisode.video_manifest_url : item.videoUrl;
+  const streamUrl = playableEpisode
+    ? playableEpisode.video_manifest_url
+    : (item.streamUrl ?? item.videoUrl);
   const subtitleUrl = playableEpisode ? playableEpisode.subtitles_url : item.subtitlesUrl;
   const nowPlaying = playableEpisode
     ? `${item.title} — E${playableEpisode.episode_number}`
     : item.title;
 
-  // Nothing playable at all: an episodic title with no free episode. An embed
-  // counts as playable, so it has to be part of this test or a title whose only
-  // video is an embed would show the sign-in gate.
+  // Nothing playable at all: an episodic title with no free episode. An embed or
+  // an upload counts as playable, so both have to be part of this test or a title
+  // whose only video is one of those would show the sign-in gate instead.
   const nothingPlayable =
     Boolean(data.locked) ||
     (episodic && !streamUrl && !freeEpisode && !embedKind);
@@ -204,7 +206,12 @@ export default function TitleDetail() {
           />
         ) : (
           <div className="flex aspect-video w-full items-center justify-center rounded-[var(--radius-card)] bg-[var(--color-surface)] text-sm text-[var(--color-muted)] ring-1 ring-[var(--color-line)]">
-            No video available for this title yet.
+            {/* Distinguished from "not published yet": the upload was recorded but the file is
+              gone from storage, which staff need to see rather than have it look
+              like a typo. */}
+            {item.missingVideo
+              ? 'The video for this title is no longer available.'
+              : 'No video available for this title yet.'}
           </div>
         )}
 
@@ -350,8 +357,6 @@ export default function TitleDetail() {
         {!episodic && (
           <p className="text-xs text-[var(--color-faint)]">This movie plays without an account.</p>
         )}
-
-        {item.watchProviders && <WatchProviders providers={item.watchProviders} />}
 
         <section aria-labelledby="related-heading">
           <div className="section-head">

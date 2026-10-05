@@ -16,8 +16,14 @@ import {
 import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES } from './access.js';
-import { lookupExternalId, fetchWatchProviders, normaliseRegion } from './tmdb.js';
 import { parseEmbed, fetchEmbedMetadata, embedUrl as buildEmbedUrl } from './embed.js';
+import {
+  handleCreateUpload,
+  handleFinaliseUpload,
+  handleListMyUploads,
+  handleDeleteUpload,
+  loadUpload,
+} from './uploads-api.js';
 import {
   PERMISSION_IDS,
   RESTORE_WINDOW_DAYS,
@@ -28,8 +34,6 @@ import {
   isPurgeable,
   sqlTimestamp,
 } from './permissions.js';
-import { searchArchive, resolveArchiveItem } from './archive.js';
-
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -200,33 +204,8 @@ function parseGenres(value) {
   }
 }
 
-/** Same tolerance as parseGenres, for the stored availability snapshot. */
-function parseWatchProviders(value) {
-  if (value && typeof value === 'object') return value;
-  try {
-    const parsed = JSON.parse(value ?? 'null');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Prepares the availability snapshot for storage.
- *
- * `undefined` means the request never mentioned it, which must leave whatever is
- * already stored untouched — an edit that changes a synopsis must not silently
- * wipe the availability. An explicit `null` clears it.
- */
-function encodeWatchProviders(value, existing) {
-  if (value === undefined) return existing ?? null;
-  if (value === null) return null;
-  return JSON.stringify(value);
-}
-
 // ------------------------------------------------------- video kind and embeds
 
-const VIDEO_KINDS = ['file', 'hls', 'embed'];
 const EMBED_PROVIDERS = ['youtube', 'vimeo'];
 
 /**
@@ -237,11 +216,17 @@ const EMBED_PROVIDERS = ['youtube', 'vimeo'];
  * at render time; buildEmbedUrl re-validates it here so a bad id stored by an
  * older bug cannot be replayed into an iframe.
  *
- * When an embed is supplied, videoUrl is cleared: leaving a stale stream URL on
- * the row would let the player prefer the file over the embed the staff just
- * chose.
+ * An upload is identified by its id and checked against the actor, so one account
+ * cannot attach another's file to a title.
+ *
+ * When an embed or upload is supplied, videoUrl is cleared: leaving a stale
+ * stream URL on the row would let the player prefer the file over the video the
+ * person posting actually chose.
+ *
+ * @param env    D1/R2 bindings; needed to read the upload row
+ * @param actor  the signed-in account, used to check upload ownership
  */
-function normaliseVideo(body, existing = {}) {
+async function normaliseVideo(body, existing = {}, env, actor) {
   // Absent means "not specified", which is different from an invalid value: a new
   // row with no kind at all is a normal file title, and reading it as invalid
   // would reject every ordinary post.
@@ -269,6 +254,27 @@ function normaliseVideo(body, existing = {}) {
     };
   }
 
+  if (kind === 'upload') {
+    // The upload must exist and be playable, and it must belong to whoever is
+    // posting. Otherwise the title would point at nothing, or worse at another
+    // user's private upload.
+    const upload = await loadUpload(env, body.uploadId);
+    if (!upload) return { error: 'That upload does not exist' };
+    if (upload.user_id !== actor.id && actor.role !== 'admin') {
+      return { error: 'That upload belongs to another account' };
+    }
+    if (upload.status !== 'ready') {
+      return { error: 'That upload has not finished. Wait for it to complete first.' };
+    }
+    return {
+      video_kind: 'upload',
+      embed_provider: null,
+      embed_id: null,
+      video_url: null,
+      upload_id: upload.id,
+    };
+  }
+
   // Switching back to a file or a manifest drops the embed columns, rather than
   // leaving a provider and id that nothing reads but that look live in the row.
   return {
@@ -276,7 +282,143 @@ function normaliseVideo(body, existing = {}) {
     embed_provider: null,
     embed_id: null,
     video_url: body.videoUrl === undefined ? (existing.video_url ?? null) : body.videoUrl,
+    // An upload replaces whatever URL was there; keeping both would leave the
+    // player choosing between two sources.
+    upload_id: null,
   };
+}
+
+/** Kinds now that titles can be uploaded rather than only linked. */
+const VIDEO_KINDS = ['file', 'hls', 'embed', 'upload'];
+
+/**
+ * A signed URL for an uploaded object, valid long enough to watch from.
+ *
+ * Short-lived on purpose: a URL that never expires would let anyone who captured
+ * it share the video permanently and skip the account gate. Six hours covers a
+ * long sitting; the page re-requests when it lapses.
+ */
+/**
+ * The URL the player actually fetches.
+ *
+ * R2 has no presigned URLs available to a Worker binding without separate S3
+ * credentials, so uploads are streamed through this route instead. That is
+ * cheaper in trust terms than making the bucket public: the access rule is
+ * enforced on every range request, so a gated video cannot be scrubbed by
+ * fetching byte ranges directly.
+ *
+ * Not a signed URL, and does not need to be: the route re-checks the session and
+ * the title's access rule on each request rather than trusting whatever URL the
+ * client is holding.
+ */
+function videoStreamPath(uploadId) {
+  return `/api/stream/${uploadId}`;
+}
+
+/**
+ * GET /api/stream/:uploadId — serves the uploaded bytes.
+ *
+ * Range requests are honoured because a browser seeking in a <video> issues them
+ * and a 200-only response makes seeking impossible.
+ *
+ * The gate is applied here, per request, from the title the upload is attached
+ * to. An upload with no title is owner-only: it is still being uploaded or has
+ * not been published, and there is no public case for serving it.
+ */
+async function handleStreamUpload(request, env, uploadId) {
+  if (!env.VIDEOS) return json({ error: 'Video storage is not configured' }, 503);
+
+  const upload = await loadUpload(env, uploadId);
+  if (!upload || upload.status !== 'ready') {
+    return json({ error: 'Video not found' }, 404);
+  }
+
+  const title = await env.DB.prepare(
+    'SELECT id, slug, type FROM titles WHERE upload_id = ?',
+  )
+    .bind(uploadId)
+    .first();
+
+  let allowed = Boolean(title);
+  if (title) {
+    // Same rule as the detail page: movies play for anyone, episodic types need
+    // an account for anything past the first episode.
+    if (EPISODIC_TYPES.includes(title.type)) {
+      allowed = Boolean(await getUser(request, env));
+    }
+  } else {
+    // Unattached upload: only its owner.
+    allowed = (await getUser(request, env))?.id === upload.user_id;
+  }
+
+  if (!allowed) {
+    // 403 rather than 404: the id is unguessable, and a wrong status here would
+    // make debugging a real playback problem harder.
+    return json({ error: 'Sign in to watch this' }, 403);
+  }
+
+  const range = request.headers.get('range');
+  const object = range
+    ? await env.VIDEOS.get(upload.object_key, { range: parseRange(range) })
+    : await env.VIDEOS.get(upload.object_key);
+
+  if (!object) return json({ error: 'Video not found' }, 404);
+
+  const headers = {
+    'content-type': upload.content_type || 'video/mp4',
+    // Private: the stream route is the only way in, so it must not be cached by
+    // a shared proxy under an authenticated request.
+    'cache-control': 'private, max-age=3600',
+    'accept-ranges': 'bytes',
+  };
+  if (object.range) {
+    headers['content-range'] = object.range;
+    headers['content-length'] = String(object.range.size);
+  }
+
+  return new Response(object.body, { status: object.range ? 206 : 200, headers });
+}
+
+/**
+ * Exported only so scripts/test-range.mjs can test it directly.
+ *
+ * It is a pure string parser with no Worker dependencies, and seeking is
+ * impossible to verify from a screenshot, so it is worth pinning with tests
+ * rather than leaving it covered only by manual playback.
+ */
+export const handleRangeForTest = parseRange;
+
+/** Parses a single-range `bytes=` header. Multi-range is ignored, as browsers do not send it. */
+function parseRange(header) {
+  const match = String(header).match(/bytes=(\d*)-(\d*)/);
+  if (!match) return undefined;
+
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === '' && rawEnd === '') return undefined;
+
+  // A suffix range asks for the last N bytes: "bytes=-500".
+  if (rawStart === '') {
+    const suffix = Number(rawEnd);
+    if (!Number.isFinite(suffix) || suffix <= 0) return undefined;
+    return { suffix };
+  }
+
+  const start = Number(rawStart);
+  if (!Number.isFinite(start) || start < 0) return undefined;
+
+  if (rawEnd === '') {
+    // Open-ended: to the end of the object, which R2 handles.
+    return { start };
+  }
+
+  const end = Number(rawEnd);
+  if (!Number.isFinite(end)) return undefined;
+  // An end before the start is not a slice of anything. Widening it to "start to
+  // the end" would serve more than was asked for, so it is refused instead.
+  if (end < start) return undefined;
+  // An end past the object is clamped by R2 rather than rejected: that is what a
+  // player means when it asks for a whole file without knowing the exact size.
+  return { start, end };
 }
 
 function shapeTitle(row) {
@@ -293,15 +435,17 @@ function shapeTitle(row) {
     posterUrl: row.poster_url,
     backdropUrl: row.backdrop_url,
 videoUrl: row.video_url,
+    // 'upload' when the uploader supplied the file, otherwise a hand-pasted URL.
+    // Kept so the UI can label provenance rather than implying a source.
     videoSource: row.video_source ?? null,
     // Defaults to 'file' for rows written before the column existed, so an
     // older title still plays instead of rendering an empty player box.
     videoKind: row.video_kind ?? (row.video_url ? 'file' : null),
     embedProvider: row.embed_provider ?? null,
     embedId: row.embed_id ?? null,
-    externalId: row.external_id ?? null,
-    externalSource: row.external_source ?? null,
-    watchProviders: parseWatchProviders(row.watch_providers),
+    // Points at the R2 object this title plays from, when the uploader supplied
+    // the video rather than a link.
+    uploadId: row.upload_id ?? null,
     subtitlesUrl: row.subtitles_url,
     featured: Boolean(row.featured),
   };
@@ -678,6 +822,27 @@ async function handleGetTitle(request, env, url, slug) {
 
   const shaped = shapeTitle(row);
 
+  // An uploaded video needs a short-lived signed URL, generated per request
+  // rather than stored. A permanent public R2 URL would make every upload
+  // fetchable by anyone who ever saw it and would bypass the access rules above
+  // entirely, which is the whole reason the gate exists.
+  if (shaped.videoKind === 'upload' && shaped.uploadId && env.VIDEOS) {
+    const upload = await loadUpload(env, shaped.uploadId);
+    if (upload?.status === 'ready') {
+      // Withheld for a gated title, exactly as the episode manifests are. The
+      // stream route checks again, so this is belt and braces rather than the
+      // only gate.
+      if (plan.titlePlayable) shaped.streamUrl = videoStreamPath(shaped.uploadId);
+      else shaped.videoUrl = null;
+    } else {
+      // The object is gone or the row is not ready: say the video is missing
+      // rather than handing the client a player with no source.
+      shaped.videoKind = null;
+      shaped.uploadId = null;
+      shaped.missingVideo = true;
+    }
+  }
+
   return json({
     title: plan.titlePlayable ? shaped : { ...shaped, videoUrl: null },
     // Every episode stays listed so the shape of the season is browsable; only
@@ -836,14 +1001,14 @@ async function handleCreateTitle(request, env) {
   // The whole body is passed through, not a hand-picked subset: normaliseVideo
   // needs videoKind, embedProvider and embedId together, and forwarding only the
   // kind made every embed look like it was missing its provider.
-  const video = normaliseVideo(body, {});
+  const video = await normaliseVideo(body, {}, env, auth.user);
   if (video.error) return json({ error: video.error }, 400);
 
   await env.DB.prepare(
     `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
        poster_url, backdrop_url, video_url, video_source, video_kind, embed_provider, embed_id,
-       external_id, external_source, watch_providers, subtitles_url, featured)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       upload_id, subtitles_url, featured)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -857,15 +1022,12 @@ async function handleCreateTitle(request, env) {
       Number(body.rating ?? 0),
       body.posterUrl ?? null,
       body.backdropUrl ?? null,
-      body.videoUrl ?? null,
+      video.video_url,
       body.videoSource ?? null,
       video.video_kind,
       video.embed_provider,
       video.embed_id,
-      body.externalId ?? null,
-      // Only a TMDB-sourced title has a namespace to remember.
-      body.externalId ? (body.externalSource ?? 'movie') : null,
-      encodeWatchProviders(body.watchProviders, null),
+      video.upload_id,
       body.subtitlesUrl ?? null,
       body.featured ? 1 : 0,
     )
@@ -897,7 +1059,7 @@ async function handleUpdateTitle(request, env, slug) {
 
   // Decided before `next` so the video columns are set in one place: video_url,
   // video_kind and the embed pair always move together and cannot disagree.
-  const video = normaliseVideo(body, existing);
+  const video = await normaliseVideo(body, existing, env, auth.user);
   if (video.error) return json({ error: video.error }, 400);
 
   const next = {
@@ -911,16 +1073,12 @@ async function handleUpdateTitle(request, env, slug) {
     rating: body.rating ?? existing.rating,
 poster_url: body.posterUrl ?? existing.poster_url,
     backdrop_url: body.backdropUrl ?? existing.backdrop_url,
-    video_url: video.video_url,
-    video_source: body.videoSource ?? existing.video_source,
+video_url: video.video_url,
+    video_source: video.video_kind === 'upload' ? 'upload' : (body.videoSource ?? existing.video_source),
     video_kind: video.video_kind,
     embed_provider: video.embed_provider,
     embed_id: video.embed_id,
-    external_id: body.externalId ?? existing.external_id,
-    external_source: body.externalId
-      ? (body.externalSource ?? existing.external_source ?? 'movie')
-      : (body.externalId === null ? null : existing.external_source),
-    watch_providers: encodeWatchProviders(body.watchProviders, existing.watch_providers),
+    upload_id: video.upload_id,
     subtitles_url: body.subtitlesUrl ?? existing.subtitles_url,
     featured: body.featured === undefined ? existing.featured : body.featured ? 1 : 0,
     type: body.type ?? existing.type,
@@ -929,8 +1087,7 @@ poster_url: body.posterUrl ?? existing.poster_url,
   await env.DB.prepare(
     `UPDATE titles SET title=?, synopsis=?, genres=?, release_date=?, runtime=?, rating=?,
        poster_url=?, backdrop_url=?, video_url=?, video_source=?, video_kind=?, embed_provider=?, embed_id=?,
-       external_id=?, external_source=?,
-       watch_providers=?, subtitles_url=?, featured=?, type=?,
+       upload_id=?, subtitles_url=?, featured=?, type=?,
        updated_at=datetime('now')
      WHERE id=?`,
   )
@@ -948,9 +1105,7 @@ poster_url: body.posterUrl ?? existing.poster_url,
       next.video_kind,
       next.embed_provider,
       next.embed_id,
-      next.external_id,
-      next.external_source,
-      next.watch_providers,
+      next.upload_id,
       next.subtitles_url,
       next.featured,
       next.type,
@@ -2421,88 +2576,6 @@ function decoyHash() {
 }
 
 /**
- * Resolves a TMDB or IMDb id to catalog metadata, for the staff console.
- * Admin only: it spends the TMDB quota, so it must not be open to any account.
- */
-async function handleTmdbLookup(request, env) {
-  const auth = await requirePermission(request, env, 'catalog');
-  if (auth.error) return auth.error;
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Invalid JSON body' }, 400);
-  }
-
-  const result = await lookupExternalId(body.id, env.TMDB_API_KEY, normaliseRegion(body.region));
-  if (result.error) return json({ error: result.error }, 400);
-  return json({ title: result });
-}
-
-/**
- * Re-reads where an already-posted title can be watched.
- *
- * Availability is regional and moves over time, so the stored snapshot goes
- * stale. This lets staff refresh it without retyping the TMDB id.
- */
-async function handleTmdbProviders(request, env) {
-  const auth = await requirePermission(request, env, 'catalog');
-  if (auth.error) return auth.error;
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Invalid JSON body' }, 400);
-  }
-
-  const slug = String(body.slug ?? '').trim();
-  if (!slug) return json({ error: 'slug is required' }, 400);
-
-  const row = await env.DB.prepare('SELECT * FROM titles WHERE slug = ?').bind(slug).first();
-  if (!row) return json({ error: 'Title not found' }, 404);
-
-  // A hand-built or public-domain title never went through a TMDB lookup, so
-  // there is no record to query. Say that instead of spending a doomed call.
-  if (!row.external_id) {
-    return json(
-      { error: 'That title has no TMDB id saved. Run a lookup on it to attach one.' },
-      400,
-    );
-  }
-  if (!env.TMDB_API_KEY) {
-    return json({ error: 'TMDB_API_KEY is not set on this Worker' }, 400);
-  }
-
-  const region = normaliseRegion(body.region);
-  const providers = await fetchWatchProviders(
-    row.external_source,
-    row.external_id,
-    env.TMDB_API_KEY,
-    region,
-  );
-
-  if (!providers) {
-    return json({ error: 'TMDB has no availability data for that title' }, 404);
-  }
-
-  await env.DB.prepare(
-    "UPDATE titles SET watch_providers=?, updated_at=datetime('now') WHERE id=?",
-  )
-    .bind(JSON.stringify(providers), row.id)
-    .run();
-
-  await env.DB.prepare(
-    'INSERT INTO admin_action_log (id, admin_id, action, target_id, detail) VALUES (?,?,?,?,?)',
-  )
-    .bind(randomHex(16), auth.user.id, 'title.watch_providers', row.id, providers.region)
-    .run();
-
-  return json({ watchProviders: providers });
-}
-
-/**
  * Resolves a pasted embed snippet or share link into something postable.
  *
  * Admin only, and gated on the same "catalog" permission as posting a title.
@@ -2549,40 +2622,6 @@ async function handleEmbedLookup(request, env) {
       ? undefined
       : 'Could not read the title from the provider. It may be private, unlisted, or blocked in this region. Check the link, or type the title yourself.',
   });
-}
-
-/**
- * Demo catalog: resolves a playable public-domain film.
- *
- * Backed by the Internet Archive, whose films are either public domain or carry
- * an explicit Creative Commons licence, and whose files are free to serve. Only
- * admin accounts can reach it, and the licence reported for each item is the
- * item's own rights statement rather than an assumption.
- *
- * Accepts either a search phrase or a known identifier:
- *   { q: "night of the living dead" }
- *   { identifier: "13-hours-by-air-1936" }
- */
-async function handleArchiveLookup(request, env) {
-  const auth = await requirePermission(request, env, 'catalog');
-  if (auth.error) return auth.error;
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Invalid JSON body' }, 400);
-  }
-
-  if (body.identifier) {
-    const result = await resolveArchiveItem(body.identifier);
-    if (result.error) return json({ error: result.error }, 404);
-    return json({ results: [result.item] });
-  }
-
-  const { error, results } = await searchArchive(body.q ?? '');
-  if (error) return json({ error }, 502);
-  return json({ results });
 }
 
 /**
@@ -2699,20 +2738,42 @@ export async function handleApi(request, env, url) {
       if (seg.length === 3 && method === 'DELETE') return handleDeleteTitle(request, env, seg[2]);
     }
 
-    if (seg[1] === 'tmdb' && seg[2] === 'lookup' && method === 'POST') {
-      return handleTmdbLookup(request, env);
-    }
-    if (seg[1] === 'tmdb' && seg[2] === 'providers' && method === 'POST') {
-      return handleTmdbProviders(request, env);
-    }
-
-    if (seg[1] === 'archive' && seg[2] === 'lookup' && method === 'POST') {
-      return handleArchiveLookup(request, env);
-    }
     // Pasted embed snippet or share link -> provider, id and a rebuilt player
     // URL. Same "catalog" permission as posting a title.
     if (seg[1] === 'embed' && seg[2] === 'lookup' && method === 'POST') {
       return handleEmbedLookup(request, env);
+    }
+
+    // Uploads. Every handler re-checks the owner, so a user can only ever touch
+    // their own files.
+    if (seg[1] === 'uploads') {
+      if (seg.length === 2 && method === 'GET') {
+        const user = await getUser(request, env);
+        if (!user) return json({ error: 'Authentication required' }, 401);
+        return handleListMyUploads(request, env, user);
+      }
+      if (seg.length === 2 && method === 'POST') {
+        const user = await getUser(request, env);
+        if (!user) return json({ error: 'Authentication required' }, 401);
+        return handleCreateUpload(request, env, user);
+      }
+      if (seg.length === 4 && seg[3] === 'finalise' && method === 'POST') {
+        const user = await getUser(request, env);
+        if (!user) return json({ error: 'Authentication required' }, 401);
+        return handleFinaliseUpload(request, env, user, seg[2]);
+      }
+      if (seg.length === 3 && method === 'DELETE') {
+        const user = await getUser(request, env);
+        if (!user) return json({ error: 'Authentication required' }, 401);
+        return handleDeleteUpload(request, env, user, seg[2]);
+      }
+    }
+
+    // Uploaded video bytes. Public, because a movie has to play for a signed-out
+    // visitor, but the access rule is re-checked per request rather than encoded
+    // into the URL.
+    if (seg[1] === 'stream' && seg.length === 3 && method === 'GET') {
+      return handleStreamUpload(request, env, seg[2]);
     }
 
     if (seg[1] === 'watchlist') {

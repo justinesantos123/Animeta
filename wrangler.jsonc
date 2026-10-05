@@ -15,6 +15,31 @@
       "database_id": "08e8bd00-d8e3-4098-a378-f062d18feb47"
     }
   ],
+  // Uploaded video. D1 cannot hold video, so the bytes go here and D1 keeps only
+  // the metadata row.
+  //
+  // The bucket is deliberately private: uploads are served through the Worker so
+  // the per-title access rule is checked on every request. A public bucket would
+  // hand out a direct URL that bypasses it.
+  //
+  // NOT YET ACTIVE. R2 has to be enabled on the Cloudflare account first, which
+  // cannot be done from the CLI (it answers "Please enable R2 through the
+  // Dashboard", code 10042). Until then the binding is left out, because
+  // deploying a binding for a bucket that does not exist fails the whole deploy.
+  //
+  // To turn uploads on:
+  //   1. Enable R2 in the Cloudflare dashboard (Storage & Databases -> R2).
+  //   2. npx wrangler r2 bucket create animeta-videos
+  //   3. Uncomment the r2_buckets block below and redeploy.
+  //
+  // With the binding absent, POST /api/uploads answers 503 with an explanation
+  // rather than failing obscurely, and everything else on the site works.
+  // "r2_buckets": [
+  //   {
+  //     "binding": "VIDEOS",
+  //     "bucket_name": "animeta-videos"
+  //   }
+  // ],
   "routes": [
     {
       "pattern": "animeta.studykittools.com",

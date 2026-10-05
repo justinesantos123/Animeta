@@ -26,6 +26,11 @@ const REQUIRED_TABLES = [
   'users', 'titles', 'seasons', 'episodes', 'watchlist', 'playback_records',
   'notifications', 'announcements', 'user_activity_days', 'app_settings',
   'admin_action_log', 'password_reset_tokens', 'auth_rate_limits',
+  // uploads holds the metadata for user-supplied video. The bytes are in R2, so
+  // this table is what makes an upload durable and auditable.
+  'uploads',
+  // Permissions, and the grants that decide what a moderator may do.
+  'permissions', 'user_permissions',
 ];
 
 for (const table of REQUIRED_TABLES) {
@@ -62,6 +67,20 @@ check(
 check(
   'auth_rate_limits declared in schema.sql too',
   /CREATE TABLE IF NOT EXISTS auth_rate_limits/.test(schema),
+);
+
+// A title's upload pointer must survive the upload being deleted: the catalog row
+// is curated and should become video-less, not vanish with the file.
+check(
+  'titles.upload_id references uploads with ON DELETE SET NULL',
+  /upload_id\s+TEXT\s+REFERENCES uploads\(id\)\s+ON DELETE SET NULL/.test(schema),
+);
+
+// An upload belongs to an account, and deleting the account must take its files'
+// metadata with it.
+check(
+  'uploads.user_id references users with ON DELETE CASCADE',
+  /user_id\s+TEXT\s+NOT NULL REFERENCES users\(id\)\s+ON DELETE CASCADE/.test(schema),
 );
 
 console.log(

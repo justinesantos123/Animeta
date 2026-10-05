@@ -71,6 +71,13 @@ export const api = {
   // Pasted embed snippet or share link -> provider, id and a rebuilt player URL.
   embedLookup: (url) => request('/embed/lookup', { method: 'POST', body: { url } }),
 
+  // Uploads. The file goes up as a raw request body rather than JSON, so this
+  // uses XMLHttpRequest directly: it is the only way to get upload progress.
+  listMyUploads: () => request('/uploads'),
+  finaliseUpload: (id, meta) =>
+    request(`/uploads/${encodeURIComponent(id)}/finalise`, { method: 'POST', body: meta }),
+  deleteUpload: (id) => request(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   // admin user management
   dashboard: () => request('/admin/dashboard'),
   listUsers: () => request('/admin/users'),
