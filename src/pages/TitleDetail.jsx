@@ -199,6 +199,10 @@ export default function TitleDetail() {
           <VideoPlayer
             key={playableEpisode ? playableEpisode.id : 'title'}
             src={streamUrl}
+            // Decides whether the browser can play this directly or hls.js has to
+            // be involved. A streamed upload has no file extension, so the kind is
+            // the only way to tell it apart from a real .m3u8.
+            kind={source.videoKind}
             poster={item.backdropUrl}
             subtitlesUrl={subtitleUrl}
             title={nowPlaying}

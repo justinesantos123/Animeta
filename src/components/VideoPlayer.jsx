@@ -22,15 +22,21 @@ import Hls from 'hls.js';
  * .mp4 makes it spin up an MSE pipeline that never completes, leaving the video
  * stuck at readyState 0 with no error. Progressive files must bypass hls.js
  * entirely and go straight to <video src>.
+ *
+ * `kind` matters as much as the extension, because a streamed upload has no
+ * extension to go on: it is served from /api/stream/<id>, and the file's real
+ * type lives in the uploads table. Judging it by URL alone sent every upload
+ * through hls.js, where it hung silently at readyState 0.
  */
-function isProgressive(src) {
+function isProgressive(src, kind) {
+  if (kind === 'upload' || kind === 'file') return true;
   if (!src) return false;
-  let path = String(src).split(/[?#]/)[0].toLowerCase();
+  const path = String(src).split(/[?#]/)[0].toLowerCase();
   // Ignore a playlist extension on the path; an .mp4 extension is decisive.
   return /\.(mp4|m4v|webm|mov|ogv|ogg)$/.test(path);
 }
 
-export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgress }) {
+export default function VideoPlayer({ src, kind, poster, subtitlesUrl, title, onProgress }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const [status, setStatus] = useState('loading');
@@ -45,7 +51,7 @@ export default function VideoPlayer({ src, poster, subtitlesUrl, title, onProgre
 
     // Progressive file: the browser already knows how to play it. Safari plays
     // HLS natively too, so both cases skip hls.js.
-    if (isProgressive(src) || video.canPlayType('application/vnd.apple.mpegurl')) {
+    if (isProgressive(src, kind) || video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src;
       setStatus('ready');
 

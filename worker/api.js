@@ -357,9 +357,19 @@ async function handleStreamUpload(request, env, uploadId) {
     return json({ error: 'Sign in to watch this' }, 403);
   }
 
-  const range = request.headers.get('range');
-  const object = range
-    ? await env.VIDEOS.get(upload.object_key, { range: parseRange(range) })
+  const rangeHeader = request.headers.get('range');
+  const parsed = rangeHeader ? parseRange(rangeHeader) : undefined;
+
+  // R2's binding takes { offset, length }, not the HTTP header's { start, end }.
+  // Passing the HTTP shape throws, which is how this was found.
+  const r2Range = parsed
+    ? parsed.suffix !== undefined
+      ? { suffix: parsed.suffix }
+      : { offset: parsed.start, length: parsed.end === undefined ? undefined : parsed.end - parsed.start + 1 }
+    : undefined;
+
+  const object = r2Range
+    ? await env.VIDEOS.get(upload.object_key, { range: r2Range })
     : await env.VIDEOS.get(upload.object_key);
 
   if (!object) return json({ error: 'Video not found' }, 404);
@@ -371,12 +381,28 @@ async function handleStreamUpload(request, env, uploadId) {
     'cache-control': 'private, max-age=3600',
     'accept-ranges': 'bytes',
   };
-  if (object.range) {
-    headers['content-range'] = object.range;
-    headers['content-length'] = String(object.range.size);
+
+  // The response status follows the *request*, not the object. R2's returned
+  // body carries a `range` describing the stored object even when the whole
+  // thing was read, so testing it made every full read claim to be a 206.
+  if (!r2Range) {
+    headers['content-length'] = String(object.size ?? 0);
+    return new Response(object.body, { status: 200, headers });
   }
 
-  return new Response(object.body, { status: object.range ? 206 : 200, headers });
+  const size = object.size ?? 0;
+  const offset = parsed.suffix !== undefined ? Math.max(0, size - parsed.suffix) : parsed.start;
+  const end = parsed.suffix !== undefined
+    ? size - 1
+    : Math.min(parsed.end ?? size - 1, size - 1);
+  const length = Math.max(0, end - offset + 1);
+
+  headers['content-range'] = `bytes ${offset}-${end}/${size}`;
+  headers['content-length'] = String(length);
+
+  // R2 was already asked for exactly this slice, so the body is the right bytes
+  // and must not be sliced again.
+  return new Response(object.body, { status: 206, headers });
 }
 
 /**
@@ -1008,7 +1034,7 @@ async function handleCreateTitle(request, env) {
     `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
        poster_url, backdrop_url, video_url, video_source, video_kind, embed_provider, embed_id,
        upload_id, subtitles_url, featured)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
