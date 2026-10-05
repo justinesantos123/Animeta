@@ -9,6 +9,8 @@ import { join } from 'node:path';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\//, '').replace(/^\w:/, (m) => m);
 const schema = readFileSync(join(ROOT, 'worker/schema.sql'), 'utf8');
+const migrationsDir = join(ROOT, 'migrations');
+const migrations = readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
 
 let failed = 0;
 
@@ -38,9 +40,35 @@ for (const table of REQUIRED_TABLES) {
 }
 
 // Every title type the app accepts must pass the CHECK constraint.
-for (const type of ['anime', 'movie', 'series', 'ai']) {
+//
+// The list is written out rather than imported so this test would still fail if
+// the module were wrong: the schema and the code are separate things that have
+// to agree, and a test that reads its expectations from the code under test
+// cannot notice them disagreeing.
+for (const type of ['anime', 'movie', 'series', 'ai', 'ads']) {
   check(`titles CHECK allows '${type}'`, new RegExp(`'${type}'`).test(schema));
 }
+
+// And the constraint itself, so a fifth type cannot be added in one place only.
+check(
+  'the CHECK constraint lists all five types',
+  /CHECK \(type IN \('anime','movie','series','ai','ads'\)\)/.test(schema),
+);
+check(
+  'a migration adds the ads type',
+  migrations.some((f) =>
+    /'anime','movie','series','ai','ads'/.test(readFileSync(join(migrationsDir, f), 'utf8')),
+  ),
+);
+
+// A poster is stored as a key, not as bytes, for the same reason the video is.
+check('uploads has a poster key column', /poster_key\s+TEXT/.test(schema));
+check(
+  'a migration adds uploads.poster_key',
+  migrations.some((f) =>
+    /ADD COLUMN poster_key/.test(readFileSync(join(migrationsDir, f), 'utf8')),
+  ),
+);
 
 // Column constraints the code depends on.
 check('users.username is NOT NULL', /username\s+TEXT NOT NULL/.test(schema));
@@ -51,8 +79,6 @@ check(
 
 // The migration files must cover each of these, since production was changed by
 // hand before the folder existed.
-const migrationsDir = join(ROOT, 'migrations');
-const migrations = readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
 check('migrations folder is populated', migrations.length >= 3);
 check(
   'a migration covers users.username',

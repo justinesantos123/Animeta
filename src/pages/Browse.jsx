@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useCatalog } from '../context/CatalogContext';
 import TitleCard from '../components/TitleCard';
+import SponsoredSlot from '../components/SponsoredSlot';
 import { TITLE_TYPES, titleTypeLabel, typePath } from '../lib/titleTypes';
 
 /**
@@ -49,8 +50,8 @@ export default function Browse() {
       <header className="max-w-2xl">
         <h1 className="text-2xl font-bold tracking-[-0.02em] md:text-3xl">Browse</h1>
         <p className="mt-1.5 text-sm text-[var(--color-muted)]">
-          {titles.length} titles across four categories. Browsing is open to everyone; an account is
-          only needed to watch.
+          {titles.length} {titles.length === 1 ? 'title' : 'titles'} across {TITLE_TYPES.length}{' '}
+          categories. Browsing is open to everyone; an account is only needed to watch.
         </p>
       </header>
 
@@ -103,6 +104,18 @@ export default function Browse() {
               </div>
             </section>
           ))}
+
+          {/* After the organic sections, not among them, and only when browsing
+              the whole catalog: someone filtering to a category has asked for
+              that category and nothing else. */}
+          {type === 'all' && (
+            <div className="mt-10">
+              <SponsoredSlot
+                items={sections.find((s) => s.value === 'ads')?.items ?? []}
+                heading="Sponsored on Animeta"
+              />
+            </div>
+          )}
         </div>
       )}
 

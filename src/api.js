@@ -8,8 +8,15 @@ async function request(path, { method = 'GET', body, signal } = {}) {
     method,
     // Session cookie must ride along or the API will never see the user.
     credentials: 'same-origin',
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    // Raw-body callers (an uploaded video, a poster frame) pass their own
+    // content-type and a pre-serialised body, so neither is touched here.
+    headers:
+      body instanceof Blob
+        ? { 'content-type': body.type || 'application/octet-stream' }
+        : body
+          ? { 'content-type': 'application/json' }
+          : undefined,
+    body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined,
     signal,
   });
 
@@ -76,6 +83,14 @@ export const api = {
   listMyUploads: () => request('/uploads'),
   finaliseUpload: (id, meta) =>
     request(`/uploads/${encodeURIComponent(id)}/finalise`, { method: 'POST', body: meta }),
+  // The poster frame the browser captured from the local file. Raw body, like
+  // the video, so it is sent straight through without a multipart envelope.
+  uploadPoster: (id, blob) =>
+    request(`/uploads/${encodeURIComponent(id)}/poster`, {
+      method: 'POST',
+      body: blob,
+      headers: { 'content-type': blob.type || 'image/jpeg' },
+    }),
   deleteUpload: (id) => request(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // admin user management

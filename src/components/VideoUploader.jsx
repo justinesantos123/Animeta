@@ -54,7 +54,10 @@ export default function VideoUploader({ onUploaded, disabled }) {
           setError(payload.error || 'The upload was rejected.');
           return;
         }
-        onUploaded?.(payload.upload);
+        // The File is handed back so the caller can read a poster frame and
+        // metadata from it while it is still local; those bytes are gone from
+        // this machine the moment the request completes.
+        onUploaded?.(payload.upload, file);
       };
 
       xhr.onerror = () => {
@@ -147,35 +150,87 @@ export default function VideoUploader({ onUploaded, disabled }) {
 }
 
 /**
- * Reads duration and dimensions out of the file, locally, before it is sent.
+ * Reads a video's metadata and grabs a frame for the poster, in the browser.
  *
- * Done in the browser because the browser is the only thing here that can decode
- * the header without a server-side ffprobe. The values are reported to the server
- * for display only and are never trusted for anything that matters.
+ * Done here because the browser is the only thing on the request path that can
+ * decode a video header or paint a frame — there is no ffmpeg in the Worker. It
+ * runs before the file is sent, while the bytes are still local, which is the
+ * only moment a frame can be captured cheaply.
+ *
+ * The frame is sought to rather than taken at t=0, because the first frame of
+ * most videos is black. Returns nulls rather than throwing on anything
+ * undecodable: the upload still works, it just has no poster.
  */
 export async function probeVideo(file) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
-    video.preload = 'metadata';
+    video.preload = 'auto';
     video.muted = true;
+    video.playsInline = true;
+    // Kept off-screen but not display:none, which would stop it decoding.
+    video.style.cssText = 'position:absolute;left:-9999px;width:320px;height:auto;';
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const blank = { durationSecs: null, width: null, height: null, poster: null };
+    let finished = false;
 
     const done = (result) => {
+      if (finished) return;
+      finished = true;
+      video.removeAttribute('src');
+      video.load();
       URL.revokeObjectURL(url);
+      video.remove();
       resolve(result);
     };
 
-    video.onloadedmetadata = () => {
-      done({
+    video.onerror = () => done(blank);
+
+    video.onloadedmetadata = async () => {
+      const meta = {
         durationSecs: Number.isFinite(video.duration) ? video.duration : null,
         width: video.videoWidth || null,
         height: video.videoHeight || null,
-      });
-    };
-    // A codec the browser cannot decode leaves metadata unreadable. The upload
-    // still proceeds; the fields simply stay empty.
-    video.onerror = () => done({ durationSecs: null, width: null, height: null });
+        poster: null,
+      };
 
+      const paint = () => {
+        try {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          // JPEG rather than PNG: a poster is a gradient-heavy still, so PNG is
+          // often several times the bytes for no visible gain. Quality 0.82
+          // keeps title text legible at thumbnail size.
+          canvas.toBlob((b) => done({ ...meta, poster: b || null }), 'image/jpeg', 0.82);
+        } catch {
+          done(meta);
+        }
+      };
+
+      // 10% in, or one second, whichever is later: long enough to get past a
+      // black opening frame, early enough to land on the establishing shot
+      // rather than a credit card.
+      const target = Math.min(
+        Math.max((meta.durationSecs || 0) * 0.1, 1),
+        Math.max((meta.durationSecs || 0) - 0.1, 0),
+      );
+
+      if (target > 0) {
+        video.onseeked = paint;
+        try {
+          video.currentTime = target;
+        } catch {
+          paint();
+        }
+      } else {
+        paint();
+      }
+    };
+
+    document.body.appendChild(video);
     video.src = url;
   });
 }

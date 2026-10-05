@@ -15,11 +15,12 @@ import {
 } from './crypto.js';
 import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
-import { planAccess, EPISODIC_TYPES } from './access.js';
+import { planAccess, EPISODIC_TYPES, TITLE_TYPES as TITLE_TYPE_VALUES } from './access.js';
 import { parseEmbed, fetchEmbedMetadata, embedUrl as buildEmbedUrl } from './embed.js';
 import {
   handleCreateUpload,
   handleFinaliseUpload,
+  handleUploadPoster,
   handleListMyUploads,
   handleDeleteUpload,
   loadUpload,
@@ -251,6 +252,10 @@ async function normaliseVideo(body, existing = {}, env, actor) {
       embed_id: String(id),
       // Cleared so the player cannot fall back to a stale file.
       video_url: null,
+      // Must be present: every branch of this function is bound positionally to
+      // the INSERT, and omitting it here binds undefined, which D1 rejects. That
+      // is what made every embed post fail with a 500.
+      upload_id: null,
     };
   }
 
@@ -413,6 +418,34 @@ async function handleStreamUpload(request, env, uploadId) {
  * rather than leaving it covered only by manual playback.
  */
 export const handleRangeForTest = parseRange;
+
+/**
+ * GET /api/poster/:uploadId — the poster frame for an upload.
+ *
+ * Public, unlike the video route. Artwork has to load for signed-out visitors in
+ * the catalog, and a poster is a single frame with nothing to protect; gating it
+ * would mean every card on every page needed a session.
+ *
+ * Cached hard, because the image never changes once written: a title's poster is
+ * only replaced by re-uploading, which produces a new upload id.
+ */
+async function handleServePoster(request, env, uploadId) {
+  if (!env.VIDEOS) return json({ error: 'Video storage is not configured' }, 503);
+
+  const upload = await loadUpload(env, uploadId);
+  if (!upload?.poster_key) return json({ error: 'Poster not found' }, 404);
+
+  const object = await env.VIDEOS.get(upload.poster_key);
+  if (!object) return json({ error: 'Poster not found' }, 404);
+
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      'content-type': 'image/jpeg',
+      'cache-control': 'public, max-age=31536000, immutable',
+    },
+  });
+}
 
 /** Parses a single-range `bytes=` header. Multi-range is ignored, as browsers do not send it. */
 function parseRange(header) {
@@ -774,7 +807,7 @@ async function handleListTitles(request, env, url) {
   const where = [];
   const binds = [];
 
-  if (type && ['anime', 'movie', 'series', 'ai'].includes(type)) {
+  if (type && TITLE_TYPE_VALUES.includes(type)) {
     where.push('type = ?');
     binds.push(type);
   }
@@ -1011,8 +1044,8 @@ async function handleCreateTitle(request, env) {
   const type = String(body.type ?? '');
   const name = String(body.title ?? '').trim();
   if (!name) return json({ error: 'Title is required' }, 400);
-  if (!['anime', 'movie', 'series', 'ai'].includes(type)) {
-    return json({ error: 'type must be anime, movie, series or ai' }, 400);
+  if (!TITLE_TYPE_VALUES.includes(type)) {
+    return json({ error: `type must be one of: ${TITLE_TYPE_VALUES.join(', ')}` }, 400);
   }
 
   let slug = slugify(body.slug || name);
@@ -2658,7 +2691,7 @@ async function handleListTitlesAdmin(request, env, url) {
   if (auth.error) return auth.error;
 
   const type = url.searchParams.get('type');
-  const where = type && ['anime', 'movie', 'series', 'ai'].includes(type) ? 'WHERE type = ?' : '';
+  const where = type && TITLE_TYPE_VALUES.includes(type) ? 'WHERE type = ?' : '';
   const sql = `SELECT t.*, (SELECT COUNT(*) FROM seasons s WHERE s.title_id = t.id) AS season_count,
     (SELECT COUNT(*) FROM episodes e JOIN seasons s2 ON s2.id = e.season_id WHERE s2.title_id = t.id) AS episode_count
     FROM titles t ${where} ORDER BY t.created_at DESC`;
@@ -2795,6 +2828,13 @@ export async function handleApi(request, env, url) {
         if (!user) return json({ error: 'Authentication required' }, 401);
         return handleFinaliseUpload(request, env, user, seg[2]);
       }
+      if (seg.length === 4 && seg[3] === 'poster' && method === 'POST') {
+        // Gated like the upload itself: attaching artwork to a file is part of
+        // publishing it, and the image is served from this origin.
+        const auth = await requirePermission(request, env, 'upload');
+        if (auth.error) return auth.error;
+        return handleUploadPoster(request, env, auth.user, seg[2]);
+      }
       if (seg.length === 3 && method === 'DELETE') {
         const user = await getUser(request, env);
         if (!user) return json({ error: 'Authentication required' }, 401);
@@ -2807,6 +2847,12 @@ export async function handleApi(request, env, url) {
     // into the URL.
     if (seg[1] === 'stream' && seg.length === 3 && method === 'GET') {
       return handleStreamUpload(request, env, seg[2]);
+    }
+
+    // Poster artwork. Public and cached hard: a catalog card has to render for
+    // anyone, and the image never changes.
+    if (seg[1] === 'poster' && seg.length === 3 && method === 'GET') {
+      return handleServePoster(request, env, seg[2]);
     }
 
     if (seg[1] === 'watchlist') {

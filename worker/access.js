@@ -17,7 +17,14 @@
 
 /** Types that gate episode 2 onwards behind an account. Mirrors the CHECK
  *  constraint in worker/schema.sql and the `gated` flag in src/lib/titleTypes.js. */
+// Episodic types, i.e. the ones released as episodes and so gated for
+// signed-out visitors. Deliberately a list rather than "everything except
+// movies": a new ungated type has to be added here consciously, so it cannot
+// quietly become watchable by everyone by being forgotten.
 export const EPISODIC_TYPES = ['series', 'anime', 'ai'];
+
+/** Every accepted title type. Mirrors the CHECK constraint in schema.sql. */
+export const TITLE_TYPES = ['anime', 'movie', 'series', 'ai', 'ads'];
 
 /**
  * @param {object} args

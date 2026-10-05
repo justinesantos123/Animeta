@@ -41,10 +41,25 @@ check(
   !/Array\.isArray\(body\.genres\)\s*\?\s*body\.genres\s*:\s*\[\]/.test(api),
 );
 
-// The type guard must mention every type the catalog accepts.
+// The type guard must reject anything outside the accepted set, and its message
+// has to be generated from that set rather than written out by hand — a
+// hand-written list is how 'ads' ended up missing from the error when it was
+// added. Read from TITLE_TYPES so adding a type cannot leave this behind.
+const { TITLE_TYPES: ACCEPTED_TYPES } = await import('../src/lib/titleTypes.js');
 check(
-  'create rejects unknown types with a message listing all four',
-  /type must be anime, movie, series or ai/.test(api),
+  'create rejects unknown types with a message listing every accepted type',
+  /type must be one of: \$\{TITLE_TYPE_VALUES\.join\(', '\)\}/.test(api),
+);
+check(
+  'and the accepted set really is every title type',
+  ACCEPTED_TYPES.map((t) => t.value).join(',') === 'anime,movie,series,ai,ads',
+  ACCEPTED_TYPES.map((t) => t.value).join(','),
+);
+// The type filter used when listing has to accept the same set, or a category
+// page would silently ignore its own filter.
+check(
+  'the listing filter accepts every title type',
+  /TITLE_TYPE_VALUES\.includes\(type\)/.test(api),
 );
 
 // Mirror the real behaviour so the string case is exercised, not just read.

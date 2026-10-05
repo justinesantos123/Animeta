@@ -18,6 +18,8 @@
 import {
   MAX_UPLOAD_BYTES,
   objectKeyFor,
+  posterKeyFor,
+  validatePoster,
   validateUpload,
   isPlayableUpload,
   randomHex,
@@ -62,6 +64,9 @@ function shapeUpload(row) {
     status: row.status,
     createdAt: row.created_at,
     playable: isPlayableUpload(row),
+    // Public artwork path, or null when no frame was captured. Keyed on the row
+    // rather than stored twice.
+    posterUrl: row.poster_key ? `/api/poster/${row.id}` : null,
   };
 }
 
@@ -71,6 +76,10 @@ function shapeUpload(row) {
  * The request body is the file. Metadata travels in query parameters, because a
  * multipart form would need the body parsed before it could be streamed to R2,
  * and that means buffering the whole video in memory.
+ *
+ * The poster frame, when there is one, comes back as a second request to
+ * /api/uploads/:id/poster. Split rather than multipart for the same reason: two
+ * single-purpose streams beat one buffer that has to hold the video.
  *
  * Gated on the `upload` permission rather than on being staff: a moderator can
  * edit catalog metadata without being able to publish a file, and a regular
@@ -190,6 +199,49 @@ export async function handleFinaliseUpload(request, env, user, uploadId) {
   return json({ upload: shapeUpload(updated) });
 }
 
+/**
+ * POST /api/uploads/:id/poster
+ *
+ * Stores the frame the browser captured while the file was still local. There is
+ * no way to generate one here, so this is the only way an uploaded title gets
+ * artwork without staff pasting an image URL by hand.
+ */
+export async function handleUploadPoster(request, env, user, uploadId) {
+  const bucketError = requireBucket(env);
+  if (bucketError) return json({ error: bucketError }, 503);
+
+  const row = await env.DB.prepare('SELECT id, user_id FROM uploads WHERE id = ?')
+    .bind(uploadId)
+    .first();
+  if (!row) return json({ error: 'Upload not found' }, 404);
+  if (row.user_id !== user.id && user.role !== 'admin') {
+    return json({ error: 'Upload not found' }, 404);
+  }
+
+  const check = validatePoster({
+    contentType: request.headers.get('content-type'),
+    contentLength: request.headers.get('content-length'),
+  });
+  if (check.error) return json({ error: check.error }, 400);
+
+  const key = posterKeyFor(uploadId);
+  try {
+    await env.VIDEOS.put(key, request.body, {
+      httpMetadata: { contentType: check.contentType },
+    });
+  } catch (err) {
+    return json({ error: `Poster upload failed: ${String(err)}` }, 502);
+  }
+
+  await env.DB.prepare(
+    "UPDATE uploads SET poster_key = ?, updated_at = datetime('now') WHERE id = ?",
+  )
+    .bind(key, uploadId)
+    .run();
+
+  return json({ ok: true, posterUrl: `/api/poster/${uploadId}` });
+}
+
 /** GET /api/uploads/mine — the caller's own uploads, newest first. */
 export async function handleListMyUploads(request, env, user) {
   const { results } = await env.DB.prepare(
@@ -217,7 +269,12 @@ export async function handleDeleteUpload(request, env, user, uploadId) {
   // The object goes first. If this fails the row is still deleted, because a
   // stranded row that looks deletable is worse than an orphaned object that costs
   // storage until the bucket lifecycle rule collects it.
-  if (env.VIDEOS) await env.VIDEOS.delete(row.object_key).catch(() => {});
+  if (env.VIDEOS) {
+    await env.VIDEOS.delete(row.object_key).catch(() => {});
+    // The poster goes too, or deleting a video would leave its artwork behind
+    // costing storage forever.
+    if (row.poster_key) await env.VIDEOS.delete(row.poster_key).catch(() => {});
+  }
 
   // ON DELETE SET NULL means any title using it keeps its catalog entry and
   // simply loses its video, which is visible to staff rather than silently broken.

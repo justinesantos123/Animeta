@@ -39,7 +39,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(lower(username));
 CREATE TABLE IF NOT EXISTS titles (
   id            TEXT PRIMARY KEY,
   slug          TEXT NOT NULL UNIQUE,
-  type          TEXT NOT NULL CHECK (type IN ('anime','movie','series','ai')),
+  type          TEXT NOT NULL CHECK (type IN ('anime','movie','series','ai','ads')),
   title         TEXT NOT NULL,
   synopsis      TEXT NOT NULL DEFAULT '',
   genres        TEXT NOT NULL DEFAULT '[]',
@@ -233,6 +233,9 @@ CREATE TABLE IF NOT EXISTS uploads (
   duration_secs  INTEGER,
   width          INTEGER,
   height         INTEGER,
+  -- Poster frame captured in the browser while the file was local. Separate
+  -- from object_key so the two can have different lifetimes.
+  poster_key     TEXT,
   status         TEXT NOT NULL DEFAULT 'pending',
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))

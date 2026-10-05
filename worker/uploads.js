@@ -110,6 +110,47 @@ export function objectKeyFor(uploadId, contentType, now = Date.now()) {
 }
 
 /**
+ * Key for the poster frame captured in the browser at upload time.
+ *
+ * Separate from the video so the two can have different lifetimes: a poster is
+ * a few tens of kilobytes and worth keeping, while the video is the expensive
+ * part and may be replaced.
+ */
+export function posterKeyFor(uploadId, now = Date.now()) {
+  const day = new Date(now).toISOString().slice(0, 10);
+  return `posters/${day}/${uploadId}.jpg`;
+}
+
+/**
+ * Guards the poster image the browser sends alongside the video.
+ *
+ * The capture is client-side, so the client is describing an image it drew
+ * itself. It is re-typed here because the bytes are served from this origin:
+ * anything the Worker would echo back as image/jpeg has to actually be an image,
+ * and SVG is never acceptable because it is a document that can script.
+ */
+const POSTER_MAX_BYTES = 2 * 1024 * 1024;
+
+export function validatePoster({ contentType, contentLength }) {
+  const type = String(contentType ?? '').split(';')[0].trim().toLowerCase();
+  // Only what a canvas can produce. Anything else, including a re-labelled
+  // script, is refused.
+  if (type !== 'image/jpeg' && type !== 'image/png' && type !== 'image/webp') {
+    return { error: 'The poster must be a JPEG, PNG or WebP image' };
+  }
+  const declared = Number(contentLength);
+  if (Number.isFinite(declared) && declared > POSTER_MAX_BYTES) {
+    return { error: 'That poster image is too large' };
+  }
+  return { contentType: type };
+}
+
+/** True when a title is an advert, and so must be labelled as one. */
+export function isAdType(type) {
+  return type === 'ads';
+}
+
+/**
  * Guards the upload request.
  *
  * Refuses before any bytes move when the declared size is over the cap. This is

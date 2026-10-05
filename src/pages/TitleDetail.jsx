@@ -8,6 +8,8 @@ import PlaybackGate from '../components/PlaybackGate';
 import { titleTypeLabel, isEpisodic } from '../lib/titleTypes';
 import TitleCard from '../components/TitleCard';
 import EmbedPlayer from '../components/EmbedPlayer';
+import SponsoredSlot from '../components/SponsoredSlot';
+import { isSponsored } from '../lib/titleTypes';
 
 export default function TitleDetail() {
   const { slug } = useParams();
@@ -107,6 +109,7 @@ export default function TitleDetail() {
   const item = data.title;
   const saved = has(item.slug);
   const episode = chosenEpisode;
+  const sponsored = isSponsored(item.type);
 
   // A locked episode that was picked shows the gate instead of playing.
   const gatedEpisode = episode?.locked ? episode : null;
@@ -139,21 +142,42 @@ export default function TitleDetail() {
     setChosenId(ep.id);
   }
 
+  // Related is editorial only. An advert never appears here, however well it
+  // happens to match the genres.
   const related = titles
-    .filter((t) => t.slug !== item.slug && (t.genres || []).some((g) => item.genres?.includes(g)))
+    .filter(
+      (t) =>
+        t.slug !== item.slug &&
+        !isSponsored(t.type) &&
+        (t.genres || []).some((g) => item.genres?.includes(g)),
+    )
     .slice(0, 5);
+
+  // The hero falls back to the captured poster frame when there is no separate
+  // backdrop, which is the common case for an upload: staff upload a video and
+  // never paste a backdrop URL.
+  const hero = item.backdropUrl || item.posterUrl;
 
   return (
     <div className="pb-24 md:pb-16">
       <section className="relative">
-        <img
-          src={item.backdropUrl}
-          alt=""
-          aria-hidden="true"
-          className="absolute inset-0 h-full w-full object-cover"
-        />
+        {hero && (
+          <img
+            src={hero}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        )}
         <div className="absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-[var(--color-bg)]/85 to-[var(--color-bg)]/40" />
         <div className="relative mx-auto flex min-h-[15rem] max-w-5xl flex-col justify-end px-4 pb-8 md:min-h-[19rem] md:pb-12">
+          {/* Above the title, not in the metadata line: a visitor must not have
+              to read the type to work out this is a paid placement. */}
+          {sponsored && (
+            <p className="mb-2 w-fit rounded-[3px] bg-[var(--color-accent)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white">
+              Sponsored · paid placement
+            </p>
+          )}
           <h1 className="max-w-3xl text-2xl font-bold leading-[1.15] tracking-[-0.02em] md:text-4xl">
             {item.title}
           </h1>
@@ -203,7 +227,7 @@ export default function TitleDetail() {
             // be involved. A streamed upload has no file extension, so the kind is
             // the only way to tell it apart from a real .m3u8.
             kind={source.videoKind}
-            poster={item.backdropUrl}
+            poster={item.backdropUrl || item.posterUrl}
             subtitlesUrl={subtitleUrl}
             title={nowPlaying}
             onProgress={onProgress}
@@ -373,8 +397,18 @@ export default function TitleDetail() {
               <TitleCard key={t.slug} item={t} />
             ))}
           </div>
-        </section>
+          </section>
+
+          {/* Below the player and after "more like this", never inside either.
+              Recommending an advert as related content would be a false claim
+              about taste, so related is filtered to editorial types and the
+              advert gets its own labelled block. */}
+          <div className="mt-10">
+            <SponsoredSlot
+              items={titles.filter((t) => isSponsored(t.type) && t.slug !== item.slug)}
+            />
+          </div>
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }

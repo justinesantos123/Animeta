@@ -9,8 +9,11 @@ import {
   MAX_UPLOAD_BYTES,
   normaliseContentType,
   objectKeyFor,
+  posterKeyFor,
+  validatePoster,
   validateUpload,
   isPlayableUpload,
+  isAdType,
 } from '../worker/uploads.js';
 
 let failed = 0;
@@ -99,6 +102,56 @@ check('a failed upload is not playable', isPlayableUpload({ status: 'failed', by
 check('a missing upload is not playable', isPlayableUpload(null) === false);
 check('a ready upload with no size is not playable', isPlayableUpload({ status: 'ready', bytes: null }) === false);
 check('a ready upload of zero bytes is not playable', isPlayableUpload({ status: 'ready', bytes: 0 }) === false);
+
+// --- Poster frames ---------------------------------------------------------
+// The poster is drawn by the browser and then served from this origin, so a
+// client that describes an image as something else must be refused rather than
+// echoed back with the type it claimed.
+check('poster key is namespaced', posterKeyFor('abc').startsWith('posters/'));
+check('poster key carries the id', posterKeyFor('abc123').includes('abc123'));
+check('poster key is a jpg', posterKeyFor('abc').endsWith('.jpg'));
+check(
+  'poster and video keys differ',
+  posterKeyFor('abc') !== objectKeyFor('abc', 'video/mp4'),
+);
+for (const type of ['image/jpeg', 'image/png', 'image/webp']) {
+  check(`poster accepts ${type}`, validatePoster({ contentType: type }).contentType === type);
+}
+check(
+  'poster ignores parameters',
+  validatePoster({ contentType: 'image/jpeg; charset=binary' }).contentType === 'image/jpeg',
+);
+const POSTER_REFUSE = [
+  ['text/html', 'evil.html'],
+  ['image/svg+xml', 'evil.svg'],
+  ['application/javascript', 'evil.js'],
+  ['application/octet-stream', 'a.bin'],
+  ['video/mp4', 'a.mp4'],
+];
+for (const [type, name] of POSTER_REFUSE) {
+  check(
+    `poster refuses ${type}`,
+    Boolean(validatePoster({ contentType: type, contentLength: 10 }).error),
+    name,
+  );
+}
+check('poster refuses a missing type', Boolean(validatePoster({ contentType: undefined }).error));
+check(
+  'poster refuses an oversized image',
+  Boolean(validatePoster({ contentType: 'image/jpeg', contentLength: 5 * 1024 * 1024 }).error),
+);
+check(
+  'poster accepts an image with no declared length',
+  validatePoster({ contentType: 'image/jpeg' }).contentType === 'image/jpeg',
+);
+
+// --- Advert type ------------------------------------------------------------
+// Only the type decides, so a title cannot be an advert in one place and not
+// another.
+check('ads is an advert type', isAdType('ads') === true);
+for (const t of ['movie', 'series', 'anime', 'ai', undefined, 'nonsense']) {
+  check(`${t} is not an advert type`, isAdType(t) === false);
+}
 
 console.log(
   failed === 0

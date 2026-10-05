@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { TITLE_TYPES, titleTypeLabel } from '../lib/titleTypes';
 import EmbedPicker from './EmbedPicker';
-import VideoUploader from './VideoUploader';
+import VideoUploader, { probeVideo } from './VideoUploader';
 import { useAuth } from '../context/AuthContext';
 
 /**
@@ -211,17 +212,42 @@ const [upload, setUpload] = useState(null);
         <div className="mb-4 space-y-4">
           {canUpload ? (
             <VideoUploader
-              onUploaded={async (up) => {
+              onUploaded={async (up, file) => {
                 setUpload(up);
                 setEmbed(null);
+                // The poster captured while the file was local is uploaded
+                // straight after the video, and used as the title's artwork. An
+                // upload with no thumbnail is the single most obvious sign of a
+                // half-finished catalog entry.
+                const meta = await probeVideo(file);
+                let posterUrl = null;
+
+                if (meta.durationSecs != null) {
+                  api.finaliseUpload(up.id, meta).catch(() => {});
+                }
+                if (meta.poster) {
+                  // The endpoint returns { ok, posterUrl }; the form wants the
+                  // path. Assigning the whole response is what put
+                  // "[object Object]" in the poster field.
+                  const res = await api.uploadPoster(up.id, meta.poster).catch(() => null);
+                  posterUrl = res?.posterUrl ?? null;
+                }
+
+                setForm((f) => ({
+                  ...f,
+                  posterUrl: posterUrl ?? f.posterUrl,
+                  // A poster frame is portrait-cropped from a landscape video,
+                  // so it is only ever a thumbnail, never the hero backdrop.
+                  backdropUrl: f.backdropUrl,
+                }));
+
                 setMessage({
                   ok: true,
-                  text: `Uploaded ${up.filename}. Fill in the details, then save.`,
+                  text: posterUrl
+                    ? `Uploaded ${up.filename} and captured a thumbnail. Fill in the details, then save.`
+                    : `Uploaded ${up.filename}. No thumbnail could be read from this file, so add a poster URL.`,
+                  warn: !posterUrl,
                 });
-                // Duration and dimensions would be read from the file in the browser
-                // before it is sent, not after: once the bytes are in R2 this machine
-                // has nothing left to read. They are display-only either way, and the
-                // upload is playable without them.
               }}
               disabled={Boolean(embed)}
             />
@@ -507,41 +533,97 @@ const [upload, setUpload] = useState(null);
                   {section.items.map((t) => (
                     <li
                       key={t.slug}
-                      className="flex flex-wrap items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-surface)] px-3.5 py-2.5 last:border-b-0"
+                      className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-[var(--color-line)] bg-[var(--color-surface)] px-3.5 py-3 last:border-b-0"
                     >
-                      <span className="min-w-0 flex-1 truncate text-[13px]">{t.title}</span>
-                      <span className="tabular-nums text-xs text-[var(--color-faint)]">
-                        {t.type}
-                      </span>
-                      {t.episodeCount > 0 && (
-                        <span className="tabular-nums text-xs text-[var(--color-faint)]">
-                          {t.episodeCount} eps
-                        </span>
-                      )}
-                      {t.videoKind === 'upload' && t.uploadId && (
+                      {/* Thumbnail, so a half-finished entry is obvious at a
+                          glance rather than only in the detail page. */}
+                      {t.posterUrl ? (
+                        <img
+                          src={t.posterUrl}
+                          alt=""
+                          aria-hidden="true"
+                          className="h-14 w-10 shrink-0 rounded-[3px] object-cover ring-1 ring-[var(--color-line)]"
+                        />
+                      ) : (
                         <span
-                          className="rounded-[3px] bg-[var(--color-accent)]/12 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-accent-strong)]"
-                          title="Plays from a file uploaded to this site"
+                          aria-hidden="true"
+                          className="flex h-14 w-10 shrink-0 items-center justify-center rounded-[3px] bg-[var(--color-surface-2)] text-[9px] text-[var(--color-faint)] ring-1 ring-[var(--color-line)]"
                         >
-                          uploaded
+                          no art
                         </span>
-                      )}
-                      {t.videoKind === 'embed' && t.embedProvider && (
-                        <span
-                          className="rounded-[3px] bg-[var(--color-accent)]/12 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-accent-strong)]"
-                          title={`Plays on ${t.embedProvider} via an embed`}
-                        >
-                          {t.embedProvider} embed
-                        </span>
-                      )}
-                      {/* "No video" rather than "no stream": a title can now play from
-                          an upload, an embed or a URL, and only the first two were
-                          ever a stream. */}
-                      {!t.videoUrl && !t.uploadId && !t.embedId && (
-                        <span className="text-xs text-[var(--color-danger)]">no video</span>
                       )}
 
-                      <span className="flex gap-1.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <Link
+                            to={`/title/${t.slug}`}
+                            className="truncate text-[13px] font-medium hover:underline"
+                          >
+                            {t.title}
+                          </Link>
+                          <span className="rounded-[3px] bg-[var(--color-surface-2)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-muted)]">
+                            {titleTypeLabel(t.type)}
+                          </span>
+                          {t.episodeCount > 0 && (
+                            <span className="tabular-nums text-[11px] text-[var(--color-faint)]">
+                              {t.episodeCount} eps
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Description, clamped to two lines: enough to tell
+                            what an entry is, not enough to turn the staff list
+                            into a wall of text. */}
+                        {t.synopsis ? (
+                          <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-[var(--color-muted)]">
+                            {t.synopsis}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-[var(--color-faint)]">
+                            No description
+                          </p>
+                        )}
+
+                        {/* Where the video actually comes from. For an embed or
+                            a URL the address is shown, because "which of my nine
+                            pasted links is this" is the question this list
+                            exists to answer. */}
+                        <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--color-faint)]">
+                          {t.videoKind === 'upload' && t.uploadId ? (
+                            <span className="text-[var(--color-accent-strong)]">
+                              uploaded file
+                            </span>
+                          ) : t.videoKind === 'embed' && t.embedProvider ? (
+                            <>
+                              <span className="text-[var(--color-accent-strong)]">
+                                {t.embedProvider} embed
+                              </span>
+                              <code className="max-w-[22rem] truncate">
+                                https://{t.embedProvider}.com/watch?v={t.embedId}
+                              </code>
+                            </>
+                          ) : t.videoUrl ? (
+                            <>
+                              <span>stream URL</span>
+                              <code className="max-w-[22rem] truncate">{t.videoUrl}</code>
+                            </>
+                          ) : (
+                            <span className="text-[var(--color-danger)]">
+                              no video source
+                            </span>
+                          )}
+                        </p>
+
+                        {/* Release date and when it was posted. A title with no
+                            release date is common and worth seeing. */}
+                        <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] tabular-nums text-[var(--color-faint)]">
+                          <span>{t.releaseDate || 'no release date'}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>posted {String(t.createdAt || '').slice(0, 10) || '—'}</span>
+                        </p>
+                      </div>
+
+                      <span className="flex shrink-0 gap-1.5">
                         <button
                           type="button"
                           onClick={() => startEdit(t)}
@@ -549,6 +631,7 @@ const [upload, setUpload] = useState(null);
                         >
                           Edit
                         </button>
+
                         <button
                           type="button"
                           onClick={() => onDelete(t)}

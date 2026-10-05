@@ -170,7 +170,10 @@ export function TopNav() {
                   }`
                 }
               >
-                {t.label}
+                {/* "Ads" in the top nav would be advertising the advertising
+                    to every visitor. It stays reachable from Browse, where
+                    someone has already chosen to browse everything. */}
+                {t.sponsored ? null : t.label}
               </NavLink>
             ))}
           </nav>

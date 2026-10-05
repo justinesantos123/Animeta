@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { titleTypeLabel } from '../lib/titleTypes';
+import { titleTypeLabel, isSponsored } from '../lib/titleTypes';
 
 /**
  * Poster card. The most repeated element in the app, so the hover treatment and
@@ -7,8 +7,14 @@ import { titleTypeLabel } from '../lib/titleTypes';
  *
  * Metadata is deliberately kept to type and rating. Genre lines on every card
  * made the grid read as a wall of text and pushed the titles out of alignment.
+ *
+ * A sponsored title gets a permanent "Sponsored" badge rather than only the Ads
+ * type label, because the type label can be scrolled past or missed and a paid
+ * placement presented as editorial is the failure that matters.
  */
 export default function TitleCard({ item, priority = false }) {
+  const sponsored = isSponsored(item.type);
+
   return (
     <Link
       to={`/title/${item.slug}`}
@@ -31,8 +37,18 @@ export default function TitleCard({ item, priority = false }) {
         </span>
 
         <span className="absolute right-2 top-2 rounded-[3px] bg-black/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-muted)]">
-          {titleTypeLabel(item.type)}
+          {sponsored ? 'Ad' : titleTypeLabel(item.type)}
         </span>
+
+        {/* The advert label sits at the foot of the artwork rather than
+            competing with the type chip in the corner, because it is the one
+            piece of information a visitor has to be able to see without
+            interacting. */}
+        {sponsored && (
+          <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-black/0 px-2 pb-1.5 pt-4 text-[10px] font-semibold uppercase tracking-wider text-white">
+            Sponsored
+          </span>
+        )}
 
         {/* Hover only. On touch there is no hover state, and showing it on every
             card at once buried the posters under a wall of play buttons. The
