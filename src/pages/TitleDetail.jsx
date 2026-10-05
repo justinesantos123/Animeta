@@ -8,6 +8,7 @@ import PlaybackGate from '../components/PlaybackGate';
 import { titleTypeLabel, isEpisodic } from '../lib/titleTypes';
 import TitleCard from '../components/TitleCard';
 import WatchProviders from '../components/WatchProviders';
+import EmbedPlayer from '../components/EmbedPlayer';
 
 export default function TitleDetail() {
   const { slug } = useParams();
@@ -112,14 +113,25 @@ export default function TitleDetail() {
   const gatedEpisode = episode?.locked ? episode : null;
   const playableEpisode = gatedEpisode ? null : episode;
 
+  // An embed is identified by provider plus id rather than a URL. Episodes can be
+  // embeds too, which is why this reads off whichever item is being played.
+  const source = playableEpisode ?? item;
+  const embedKind = source.videoKind === 'embed';
+  const embedProvider = source.embedProvider;
+  const embedId = source.embedId;
+
   const streamUrl = playableEpisode ? playableEpisode.video_manifest_url : item.videoUrl;
   const subtitleUrl = playableEpisode ? playableEpisode.subtitles_url : item.subtitlesUrl;
   const nowPlaying = playableEpisode
     ? `${item.title} — E${playableEpisode.episode_number}`
     : item.title;
 
-  // Nothing playable at all: an episodic title with no free episode.
-  const nothingPlayable = Boolean(data.locked) || (episodic && !streamUrl && !freeEpisode);
+  // Nothing playable at all: an episodic title with no free episode. An embed
+  // counts as playable, so it has to be part of this test or a title whose only
+  // video is an embed would show the sign-in gate.
+  const nothingPlayable =
+    Boolean(data.locked) ||
+    (episodic && !streamUrl && !freeEpisode && !embedKind);
 
   function pickEpisode(ep) {
     setChosenId(ep.id);
@@ -172,6 +184,15 @@ export default function TitleDetail() {
           />
         ) : nothingPlayable ? (
           <PlaybackGate title={item.title} firstEpisodeIsFree={false} />
+        ) : embedKind ? (
+          // Keyed like the file player so switching episodes swaps the frame
+          // rather than trying to reuse one that was built for a different id.
+          <EmbedPlayer
+            key={playableEpisode ? `embed-${playableEpisode.id}` : 'embed-title'}
+            provider={embedProvider}
+            videoId={embedId}
+            title={nowPlaying}
+          />
         ) : streamUrl ? (
           <VideoPlayer
             key={playableEpisode ? playableEpisode.id : 'title'}

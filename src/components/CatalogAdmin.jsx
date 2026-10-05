@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { TITLE_TYPES, titleTypeLabel } from '../lib/titleTypes';
 import ArchivePicker from './ArchivePicker';
+import EmbedPicker from './EmbedPicker';
 import WatchProviders from './WatchProviders';
 import { regionName, REGION_OPTIONS } from '../lib/regions';
 
@@ -51,6 +52,9 @@ const [looking, setLooking] = useState(false);
 const [resolved, setResolved] = useState(null);
   // Availability snapshot from the last lookup, persisted on save.
 const [providers, setProviders] = useState(null);
+  // The pasted embed, held as a provider plus an id. This is what gets saved:
+  // never the pasted snippet.
+  const [embed, setEmbed] = useState(null);
   // Availability is regional, so staff pick which market they are reading for.
 const [region, setRegion] = useState('US');
 const [refreshing, setRefreshing] = useState(null);
@@ -81,6 +85,7 @@ const [refreshing, setRefreshing] = useState(null);
     setExternalId('');
     setResolved(null);
     setProviders(null);
+    setEmbed(null);
   };
 
   /** Re-reads availability for a title already in the catalog. */
@@ -166,6 +171,12 @@ const [refreshing, setRefreshing] = useState(null);
         externalId: resolved?.externalId ?? null,
         externalSource: resolved?.type === 'series' ? 'tv' : 'movie',
         watchProviders: providers ?? null,
+        // An embed takes precedence over a stream URL: sending both would leave
+        // the worker to guess, and the file would win by accident.
+        videoKind: embed ? 'embed' : 'file',
+        embedProvider: embed?.provider ?? null,
+        embedId: embed?.videoId ?? null,
+        videoUrl: embed ? '' : form.videoUrl,
       };
       if (editing) {
         await api.updateTitle(editing, payload);
@@ -201,6 +212,18 @@ const [refreshing, setRefreshing] = useState(null);
       videoUrl: t.videoUrl || '',
       subtitlesUrl: t.subtitlesUrl || '',
     });
+    // An edited embed is reloaded into the same state the picker fills, so saving
+    // without touching the video does not silently drop it back to a stream URL.
+    setEmbed(
+      t.videoKind === 'embed' && t.embedProvider && t.embedId
+        ? {
+            provider: t.embedProvider,
+            videoId: t.embedId,
+            embedUrl: null,
+            watchUrl: null,
+          }
+        : null,
+    );
     setResolved(null);
     setExternalId('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -253,19 +276,47 @@ const [refreshing, setRefreshing] = useState(null);
           )}
         </div>
 
-        {!editing && (
-          <div className="mb-4">
-            {resolved?.watchProviders && <WatchProviders providers={resolved.watchProviders} />}
+        {/* Two ways in, because they answer different questions: a pasted embed is for
+            a video you already have, the Archive picker is for a playable
+            public-domain film you do not. */}
+        <div className="mb-4 space-y-4">
+          <EmbedPicker
+            onMessage={(msg) => {
+              if (!msg) return;
+              setMessage({ ok: msg.ok, text: msg.text, warn: msg.warn });
+            }}
+            onResolve={(d) => {
+              // No message here: the picker reports the outcome itself, and two
+              // components setting the same banner means the last write wins and
+              // the wording flickers between them.
+              setForm((f) => ({
+                ...f,
+                // oEmbed gives a real title and thumbnail for a public video, so
+                // the form is usually already complete.
+                title: d.title || f.title,
+                posterUrl: d.posterUrl || d.thumbnailUrl || f.posterUrl,
+                videoUrl: '',
+              }));
+              setEmbed({
+                provider: d.provider,
+                videoId: d.videoId,
+                embedUrl: d.embedUrl,
+                watchUrl: d.watchUrl,
+                title: d.title,
+              });
+            }}
+          />
 
-      <ArchivePicker
-              onError={(msg) => msg && setMessage({ ok: false, text: msg })}
-              onAdded={(t) => {
-                setMessage({ ok: true, text: `"${t.title}" added to Movies and is playable now.` });
-                load();
-              }}
-            />
-          </div>
-        )}
+          {resolved?.watchProviders && <WatchProviders providers={resolved.watchProviders} />}
+
+          <ArchivePicker
+            onError={(msg) => msg && setMessage({ ok: false, text: msg })}
+            onAdded={(t) => {
+              setMessage({ ok: true, text: `"${t.title}" added to Movies and is playable now.` });
+              load();
+            }}
+          />
+        </div>
 
         {/* id lookup */}
         <div className="rounded-[var(--radius-card)] bg-[var(--color-surface)] p-4 ring-1 ring-[var(--color-line)]">
@@ -442,13 +493,31 @@ const [refreshing, setRefreshing] = useState(null);
                 id="video"
                 value={form.videoUrl}
                 onChange={set('videoUrl')}
-                className={INPUT}
+                disabled={Boolean(embed)}
+                className={`${INPUT} disabled:opacity-50`}
                 placeholder="https://…/master.m3u8"
               />
-              <p className="mt-1 text-[11px] text-[var(--color-faint)]">
-                The playable file for the whole title. For an episodic type, add per-episode URLs
-                below instead.
-              </p>
+              {embed ? (
+                // Makes the precedence visible rather than leaving staff to
+                // wonder why their pasted URL is not what plays.
+                <p className="mt-1 text-[11px] text-[var(--color-accent-strong)]">
+                  Playing the {embed.provider} embed instead. Clear it below to use a stream URL.
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] text-[var(--color-faint)]">
+                  The playable file for the whole title. For an episodic type, add per-episode URLs
+                  below instead.
+                </p>
+              )}
+              {embed && (
+                <button
+                  type="button"
+                  onClick={() => setEmbed(null)}
+                  className="mt-1.5 text-[11px] font-medium text-[var(--color-muted)] underline underline-offset-2 hover:text-[var(--color-text)]"
+                >
+                  Clear the embed
+                </button>
+              )}
             </div>
 
             <div className="sm:col-span-2">
@@ -492,9 +561,13 @@ const [refreshing, setRefreshing] = useState(null);
             <p
               role="status"
               className={`rounded-[var(--radius-control)] px-3 py-2 text-xs ring-1 ${
-                message.ok
-                  ? 'bg-[var(--color-accent)]/12 text-[var(--color-accent-strong)] ring-[var(--color-accent)]/30'
-                  : 'bg-[var(--color-danger)]/12 text-[var(--color-danger)] ring-[var(--color-danger)]/30'
+// A warning is styled apart from a plain success: the operation worked, but
+                  // something in the result needs a human's attention.
+                  message.warn
+                    ? 'bg-[var(--color-danger)]/12 text-[var(--color-muted)] ring-[var(--color-danger)]/30'
+                    : message.ok
+                      ? 'bg-[var(--color-accent)]/12 text-[var(--color-accent-strong)] ring-[var(--color-accent)]/30'
+                      : 'bg-[var(--color-danger)]/12 text-[var(--color-danger)] ring-[var(--color-danger)]/30'
               }`}
             >
               {message.text}
@@ -548,6 +621,14 @@ const [refreshing, setRefreshing] = useState(null);
                       {t.episodeCount > 0 && (
                         <span className="tabular-nums text-xs text-[var(--color-faint)]">
                           {t.episodeCount} eps
+                        </span>
+                      )}
+                      {t.videoKind === 'embed' && t.embedProvider && (
+                        <span
+                          className="rounded-[3px] bg-[var(--color-accent)]/12 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-accent-strong)]"
+                          title={`Plays on ${t.embedProvider} via an embed`}
+                        >
+                          {t.embedProvider} embed
                         </span>
                       )}
                       {t.videoSource === 'archive' && (

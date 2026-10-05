@@ -68,6 +68,8 @@ export const api = {
     tmdbProviders: (slug, region) => request('/tmdb/providers', { method: 'POST', body: { slug, region } }),
   // Demo catalog: playable public-domain films from the Internet Archive.
   archiveLookup: (payload) => request('/archive/lookup', { method: 'POST', body: payload }),
+  // Pasted embed snippet or share link -> provider, id and a rebuilt player URL.
+  embedLookup: (url) => request('/embed/lookup', { method: 'POST', body: { url } }),
 
   // admin user management
   dashboard: () => request('/admin/dashboard'),

@@ -17,6 +17,7 @@ import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES } from './access.js';
 import { lookupExternalId, fetchWatchProviders, normaliseRegion } from './tmdb.js';
+import { parseEmbed, fetchEmbedMetadata, embedUrl as buildEmbedUrl } from './embed.js';
 import {
   PERMISSION_IDS,
   RESTORE_WINDOW_DAYS,
@@ -223,6 +224,61 @@ function encodeWatchProviders(value, existing) {
   return JSON.stringify(value);
 }
 
+// ------------------------------------------------------- video kind and embeds
+
+const VIDEO_KINDS = ['file', 'hls', 'embed'];
+const EMBED_PROVIDERS = ['youtube', 'vimeo'];
+
+/**
+ * Works out how a video should be played, from whatever the client sent.
+ *
+ * An embed is identified by provider plus id and never by a URL, so a caller
+ * cannot smuggle markup through this path. The player URL is rebuilt from the id
+ * at render time; buildEmbedUrl re-validates it here so a bad id stored by an
+ * older bug cannot be replayed into an iframe.
+ *
+ * When an embed is supplied, videoUrl is cleared: leaving a stale stream URL on
+ * the row would let the player prefer the file over the embed the staff just
+ * chose.
+ */
+function normaliseVideo(body, existing = {}) {
+  // Absent means "not specified", which is different from an invalid value: a new
+  // row with no kind at all is a normal file title, and reading it as invalid
+  // would reject every ordinary post.
+  const kind = body.videoKind ?? existing.video_kind ?? 'file';
+  if (!VIDEO_KINDS.includes(kind)) {
+    return { error: 'videoKind must be file, hls or embed' };
+  }
+
+  const provider = body.embedProvider ?? existing.embed_provider ?? null;
+  const id = body.embedId ?? existing.embed_id ?? null;
+
+  if (kind === 'embed') {
+    if (!EMBED_PROVIDERS.includes(provider)) {
+      return { error: 'embedProvider must be youtube or vimeo' };
+    }
+    if (!buildEmbedUrl(provider, id)) {
+      return { error: 'That embed id is not valid' };
+    }
+    return {
+      video_kind: 'embed',
+      embed_provider: provider,
+      embed_id: String(id),
+      // Cleared so the player cannot fall back to a stale file.
+      video_url: null,
+    };
+  }
+
+  // Switching back to a file or a manifest drops the embed columns, rather than
+  // leaving a provider and id that nothing reads but that look live in the row.
+  return {
+    video_kind: kind,
+    embed_provider: null,
+    embed_id: null,
+    video_url: body.videoUrl === undefined ? (existing.video_url ?? null) : body.videoUrl,
+  };
+}
+
 function shapeTitle(row) {
   return {
     id: row.id,
@@ -238,6 +294,11 @@ function shapeTitle(row) {
     backdropUrl: row.backdrop_url,
 videoUrl: row.video_url,
     videoSource: row.video_source ?? null,
+    // Defaults to 'file' for rows written before the column existed, so an
+    // older title still plays instead of rendering an empty player box.
+    videoKind: row.video_kind ?? (row.video_url ? 'file' : null),
+    embedProvider: row.embed_provider ?? null,
+    embedId: row.embed_id ?? null,
     externalId: row.external_id ?? null,
     externalSource: row.external_source ?? null,
     watchProviders: parseWatchProviders(row.watch_providers),
@@ -585,7 +646,8 @@ async function handleGetTitle(request, env, url, slug) {
     .all();
 
   const episodes = await env.DB.prepare(
-    `SELECT e.id, e.episode_number, e.title, e.video_manifest_url, e.subtitles_url, e.runtime, e.season_id
+    `SELECT e.id, e.episode_number, e.title, e.video_manifest_url, e.subtitles_url, e.runtime,
+            e.season_id, e.video_kind, e.embed_provider, e.embed_id
      FROM episodes e JOIN seasons s ON s.id = e.season_id
      WHERE s.title_id = ? ORDER BY s.season_number, e.episode_number`,
   )
@@ -771,11 +833,17 @@ async function handleCreateTitle(request, env) {
   const id = randomHex(16);
   const genres = JSON.stringify(normalizeGenres(body.genres));
 
+  // The whole body is passed through, not a hand-picked subset: normaliseVideo
+  // needs videoKind, embedProvider and embedId together, and forwarding only the
+  // kind made every embed look like it was missing its provider.
+  const video = normaliseVideo(body, {});
+  if (video.error) return json({ error: video.error }, 400);
+
   await env.DB.prepare(
     `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
-       poster_url, backdrop_url, video_url, video_source, external_id, external_source,
-       watch_providers, subtitles_url, featured)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       poster_url, backdrop_url, video_url, video_source, video_kind, embed_provider, embed_id,
+       external_id, external_source, watch_providers, subtitles_url, featured)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -791,6 +859,9 @@ async function handleCreateTitle(request, env) {
       body.backdropUrl ?? null,
       body.videoUrl ?? null,
       body.videoSource ?? null,
+      video.video_kind,
+      video.embed_provider,
+      video.embed_id,
       body.externalId ?? null,
       // Only a TMDB-sourced title has a namespace to remember.
       body.externalId ? (body.externalSource ?? 'movie') : null,
@@ -824,6 +895,11 @@ async function handleUpdateTitle(request, env, slug) {
   const existing = await env.DB.prepare('SELECT * FROM titles WHERE slug = ?').bind(slug).first();
   if (!existing) return json({ error: 'Title not found' }, 404);
 
+  // Decided before `next` so the video columns are set in one place: video_url,
+  // video_kind and the embed pair always move together and cannot disagree.
+  const video = normaliseVideo(body, existing);
+  if (video.error) return json({ error: video.error }, 400);
+
   const next = {
     title: body.title ?? existing.title,
     synopsis: body.synopsis ?? existing.synopsis,
@@ -833,10 +909,13 @@ async function handleUpdateTitle(request, env, slug) {
     release_date: body.releaseDate ?? existing.release_date,
     runtime: body.runtime ?? existing.runtime,
     rating: body.rating ?? existing.rating,
-    poster_url: body.posterUrl ?? existing.poster_url,
+poster_url: body.posterUrl ?? existing.poster_url,
     backdrop_url: body.backdropUrl ?? existing.backdrop_url,
-    video_url: body.videoUrl ?? existing.video_url,
+    video_url: video.video_url,
     video_source: body.videoSource ?? existing.video_source,
+    video_kind: video.video_kind,
+    embed_provider: video.embed_provider,
+    embed_id: video.embed_id,
     external_id: body.externalId ?? existing.external_id,
     external_source: body.externalId
       ? (body.externalSource ?? existing.external_source ?? 'movie')
@@ -849,7 +928,8 @@ async function handleUpdateTitle(request, env, slug) {
 
   await env.DB.prepare(
     `UPDATE titles SET title=?, synopsis=?, genres=?, release_date=?, runtime=?, rating=?,
-       poster_url=?, backdrop_url=?, video_url=?, video_source=?, external_id=?, external_source=?,
+       poster_url=?, backdrop_url=?, video_url=?, video_source=?, video_kind=?, embed_provider=?, embed_id=?,
+       external_id=?, external_source=?,
        watch_providers=?, subtitles_url=?, featured=?, type=?,
        updated_at=datetime('now')
      WHERE id=?`,
@@ -865,6 +945,9 @@ async function handleUpdateTitle(request, env, slug) {
       next.backdrop_url,
       next.video_url,
       next.video_source,
+      next.video_kind,
+      next.embed_provider,
+      next.embed_id,
       next.external_id,
       next.external_source,
       next.watch_providers,
@@ -2420,6 +2503,55 @@ async function handleTmdbProviders(request, env) {
 }
 
 /**
+ * Resolves a pasted embed snippet or share link into something postable.
+ *
+ * Admin only, and gated on the same "catalog" permission as posting a title.
+ *
+ * The paste is parsed for a provider and an id and then thrown away: what comes
+ * back is those two values plus a URL rebuilt from them. Nothing from the pasted
+ * markup is returned, so there is no path by which a snippet can reach the
+ * database or the DOM.
+ *
+ * oEmbed supplies the title and thumbnail when the video is public. It is
+ * best-effort, and its absence is reported as such rather than as a failure,
+ * because staff can always type the title themselves.
+ */
+async function handleEmbedLookup(request, env) {
+  const auth = await requirePermission(request, env, 'catalog');
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const parsed = parseEmbed(body.url);
+  if (parsed.error) return json({ error: parsed.error }, 400);
+
+  const meta = await fetchEmbedMetadata(parsed.provider, parsed.videoId);
+
+  // A video that will not embed is worth saying plainly. YouTube answers oEmbed
+  // 404 for private, age-restricted, region-blocked and deleted videos, and a
+  // public player for one of those shows the viewer an error instead of a film.
+  return json({
+    provider: parsed.provider,
+    videoId: parsed.videoId,
+    embedUrl: parsed.embedUrl,
+    watchUrl: parsed.watchUrl,
+    // The provider's own thumbnail is a good poster when there is no TMDB art.
+    thumbnailUrl: meta.thumbnailUrl ?? null,
+    title: meta.title ?? null,
+    author: meta.author ?? null,
+    metadataFound: Boolean(meta.title),
+    hint: meta.title
+      ? undefined
+      : 'Could not read the title from the provider. It may be private, unlisted, or blocked in this region. Check the link, or type the title yourself.',
+  });
+}
+
+/**
  * Demo catalog: resolves a playable public-domain film.
  *
  * Backed by the Internet Archive, whose films are either public domain or carry
@@ -2576,6 +2708,11 @@ export async function handleApi(request, env, url) {
 
     if (seg[1] === 'archive' && seg[2] === 'lookup' && method === 'POST') {
       return handleArchiveLookup(request, env);
+    }
+    // Pasted embed snippet or share link -> provider, id and a rebuilt player
+    // URL. Same "catalog" permission as posting a title.
+    if (seg[1] === 'embed' && seg[2] === 'lookup' && method === 'POST') {
+      return handleEmbedLookup(request, env);
     }
 
     if (seg[1] === 'watchlist') {

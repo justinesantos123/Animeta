@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS titles (
   -- from the Internet Archive, NULL for a hand-pasted URL. Lets the UI label
   -- provenance instead of implying one source.
   video_source  TEXT,
+  -- How the video is played. NULL is treated as 'file' so a row written before
+  -- this column keeps working.
+  --   'file'   a progressive mp4 served directly
+  --   'hls'    an m3u8 manifest, played by hls.js
+  --   'embed'  an external player rendered as an iframe
+  video_kind     TEXT,
+  -- For video_kind = 'embed': the provider and its validated id. The player URL
+  -- is rebuilt from these two values at render time and the pasted snippet is
+  -- never stored, so a paste cannot become stored XSS.
+  embed_provider TEXT,
+  embed_id       TEXT,
   -- Which TMDB record this title was posted from, kept so availability can be
   -- refreshed later without staff retyping the id. external_source is the TMDB
   -- namespace ('movie' or 'tv') and is stored rather than inferred from `type`,
@@ -92,6 +103,10 @@ CREATE TABLE IF NOT EXISTS episodes (
   video_manifest_url TEXT,
   subtitles_url      TEXT,
   runtime            TEXT,
+  -- Same playback kinds and same embed columns as titles, for the same reason.
+  video_kind         TEXT,
+  embed_provider     TEXT,
+  embed_id           TEXT,
   UNIQUE (season_id, episode_number)
 );
 
