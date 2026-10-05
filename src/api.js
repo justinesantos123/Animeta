@@ -116,8 +116,14 @@ export const api = {
   createUser: (payload) => request('/admin/users', { method: 'POST', body: payload }),
   setUserRole: (id, role) =>
     request(`/admin/users/${encodeURIComponent(id)}/role`, { method: 'POST', body: { role } }),
-  resetUserPassword: (id) =>
-    request(`/admin/users/${encodeURIComponent(id)}/password`, { method: 'POST' }),
+  // Reset a password. Omit `chosen` to have one generated and returned once;
+  // pass `chosen` when you already know the password and want to set it, which
+  // is the path for provisioning an account you can sign into yourself.
+  resetUserPassword: (id, chosen) =>
+    request(`/admin/users/${encodeURIComponent(id)}/password`, {
+      method: 'POST',
+      body: chosen ? { password: chosen } : undefined,
+    }),
   sendUserResetLink: (id) =>
     request(`/admin/users/${encodeURIComponent(id)}/reset-link`, { method: 'POST' }),
   deleteUser: (id) => request(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),

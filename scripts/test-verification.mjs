@@ -153,6 +153,66 @@ check(
   /<option value="user">Member<\/option>/.test(userAdmin),
 );
 
+// --------------------------------------------------- admin-set passwords
+//
+// The thing this must never become: a way to read a stored password. What staff
+// get instead is the ability to OVERWRITE one with a value they already know.
+// These checks exist so that stays true -- the schema must have no column that
+// could hold a readable password, and the response must never echo one back.
+
+check(
+  'no column anywhere could hold a readable password',
+  !/\b(password|passwd|pw|secret)\s+TEXT(?!\s*$)/i.test(schema) ||
+    // The only password-shaped columns allowed are the hash, the salt and the
+    // non-reversible fingerprint.
+    (schema.match(/\bpassword[a-z_]*\s+TEXT/gi) || []).every((c) =>
+      /password_hash|password_fingerprint/i.test(c),
+    ),
+  (schema.match(/\bpassword[a-z_]*\s+TEXT/gi) || []).join(', '),
+);
+check('there is no plaintext password column', !/password_plain|password_text|password_readable/i.test(schema));
+check('the migration adds no readable password column', !/password_plain|password_text/i.test(migration));
+
+// Setting a password must not return it. The caller typed it, so echoing it
+// would only put it in a response body and browser history.
+// Scans only the chosen-password branch. Bounded at the *next* top-level
+// `return json({`, which is the generated branch: bounding on `notice:` instead
+// would include that branch's `password,` and pass for the wrong reason.
+{
+  const start = api.indexOf('if (supplied) {', api.indexOf('async function handleAdminResetPassword'));
+  const end = api.indexOf('\n  return json({', start);
+  const body = api.slice(start, end);
+  check(
+    'a chosen password is not echoed back',
+    /chosen: true/.test(body) && !/\bpassword\b\s*[,:]/.test(body),
+    body.replace(/\s+/g, ' ').slice(0, 100),
+  );
+}
+check(
+  'a generated password is still returned exactly once',
+  /notice: 'Shown once\. Copy it now - it cannot be retrieved later\.'/.test(api),
+);
+
+// Both paths must hash before storing. A raw insert of the supplied value would
+// make the whole thing a plaintext store.
+check(
+  'both paths hash with a fresh salt',
+  /const hash = await hashPassword\(password, salt\);/.test(api) &&
+    /UPDATE users SET password_hash = \?, salt = \?, password_fingerprint = \?/.test(api),
+);
+check('a fresh salt is generated per call', /const salt = randomSalt\(\);/.test(api));
+
+// A password change must invalidate outstanding reset links, or a link handed
+// out before the change stays valid afterwards.
+check(
+  'changing a password clears outstanding reset tokens',
+  /DELETE FROM password_reset_tokens WHERE user_id = \?/.test(api),
+);
+// The two events are logged separately, so a later audit can tell a staff-chosen
+// password from a generated one.
+check('a chosen password is audited distinctly', /'user\.password\.set'/.test(api));
+check('a generated password is audited distinctly', /'user\.password\.reset'/.test(api));
+
 // -------------------------------------------------------------- watchlist
 check('Library is hidden from staff', /memberOnly: true/.test(nav));
 check('the nav filters by role', /linksFor\(user\?\.role\)/.test(nav));

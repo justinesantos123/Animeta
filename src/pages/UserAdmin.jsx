@@ -94,7 +94,19 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
   const [newUsername, setNewUsername] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newRole, setNewRole] = useState('user');
+  const [newPassword, setNewPassword] = useState('');
   const [showPasswords, setShowPasswords] = useState(false);
+
+  // The password currently being set on an existing row, keyed by user id. Null
+  // means that row's editor is closed.
+  const [editingPasswordFor, setEditingPasswordFor] = useState(null);
+  const [chosenPassword, setChosenPassword] = useState('');
+
+  // Weak, but not refused. Staff choose this password themselves, so the policy
+  // that guards a member's own choice is reported rather than enforced. The
+  // warning is shown rather than swallowed, because this is the one place a
+  // short password reaches an account without anybody being stopped.
+  const [weakNotice, setWeakNotice] = useState(null);
 
   const isOwner =
     state.ownerEmail && user && user.email.toLowerCase() === state.ownerEmail.toLowerCase();
@@ -146,6 +158,27 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
         label: `New password for ${d.email}`,
         hint: 'Shown once and never stored in readable form. If you lose it, reset again — nobody can retrieve it later.',
       });
+      setWeakNotice(null);
+    });
+
+  /**
+   * Sets a password staff already know, on an account that already exists.
+   *
+   * This is not a way to read somebody's current password -- nothing can, and the
+   * database holds only a hash. It overwrites it with one we choose, which is the
+   * useful half: it makes an account signable by whoever set it without a
+   * generated value having to be read out of a response and passed around.
+   */
+  const onSetChosenPassword = (target) =>
+    withBusy(target.id, async () => {
+      const d = await api.resetUserPassword(target.id, chosenPassword);
+      setWeakNotice(
+        d.weak
+          ? `Password set for ${target.email}, but it is weak: ${d.weak.toLowerCase()}.`
+          : `Password set for ${target.email}. Nobody but you knows it.`,
+      );
+      setEditingPasswordFor(null);
+      setChosenPassword('');
     });
 
   const onSendLink = (target) =>
@@ -236,13 +269,17 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
         role: newRole,
         username: newUsername.trim(),
         phone: newPhone.trim(),
+        // Omitted when blank, so the server generates one and hands it back.
+        password: newPassword || undefined,
       });
       if (d.password) {
         setSecret({ value: d.password, label: `Password for ${d.email}` });
       }
+      setWeakNotice(null);
       setNewEmail('');
       setNewUsername('');
       setNewPhone('');
+      setNewPassword('');
       await load();
     } catch (err) {
       setError(err.message);
@@ -293,6 +330,15 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
         </p>
       )}
 
+      {weakNotice && (
+        <p
+          role="status"
+          className="rounded-[var(--radius-control)] bg-amber-500/10 px-3 py-2 text-xs text-amber-300 ring-1 ring-amber-500/30"
+        >
+          {weakNotice}
+        </p>
+      )}
+
       {/* Create account */}
       <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3 rounded-[var(--radius-card)] bg-surface p-4 ring-1 ring-[var(--color-line-strong)]">
         <div className="min-w-56 flex-1">
@@ -327,7 +373,7 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
             placeholder="their_handle"
           />
         </div>
-        <div>
+          <div>
           <label htmlFor="new-user-phone" className="mb-1 block text-xs font-medium text-muted">
             Phone (optional)
           </label>
@@ -340,6 +386,25 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
             placeholder="+63 917 123 4567"
           />
           <p className="mt-1 text-[11px] text-muted">Collected, never verified or messaged.</p>
+        </div>
+        <div>
+          <label htmlFor="new-user-password" className="mb-1 block text-xs font-medium text-muted">
+            Password <span className="text-faint">(optional)</span>
+          </label>
+          <input
+            id="new-user-password"
+            type="text"
+            autoComplete="off"
+            minLength={8}
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            className={INPUT}
+            placeholder="leave blank to generate one"
+          />
+          <p className="mt-1 text-[11px] text-muted">
+            Set one you know if you need to sign in as this account. Stored hashed either way, so
+            nobody can read it back later.
+          </p>
         </div>
         <div>
           <label htmlFor="new-user-role" className="mb-1 block text-xs font-medium text-muted">
@@ -461,7 +526,21 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
                       onClick={() => onReset(u)}
                       className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-text transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
                     >
-                      Reset password
+                      Generate password
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={busyId === u.id}
+                      aria-expanded={editingPasswordFor === u.id}
+                      onClick={() => {
+                        setWeakNotice(null);
+                        setChosenPassword('');
+                        setEditingPasswordFor(editingPasswordFor === u.id ? null : u.id);
+                      }}
+                      className="rounded-[var(--radius-control)] bg-surface-2 px-2.5 py-1 text-xs font-semibold text-accent transition hover:bg-[var(--color-surface-3)] disabled:opacity-50"
+                    >
+                      Set password
                     </button>
 
                     <button
@@ -506,7 +585,55 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
                     )}
                   </div>
 
-{/* Permission grants, on their own row so the toggles have room. Only
+                  {editingPasswordFor === u.id && (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        onSetChosenPassword(u);
+                      }}
+                      className="mt-2 flex flex-wrap items-end gap-2"
+                    >
+                      <div>
+                        <label
+                          htmlFor={`pw-${u.id}`}
+                          className="mb-1 block text-[11px] font-medium text-muted"
+                        >
+                          New password for @{u.username || u.email}
+                        </label>
+                        <input
+                          id={`pw-${u.id}`}
+                          type="text"
+                          autoComplete="off"
+                          minLength={8}
+                          required
+                          value={chosenPassword}
+                          onChange={(e) => setChosenPassword(e.target.value)}
+                          className="rounded-[var(--radius-control)] bg-bg px-2.5 py-1.5 text-xs text-text ring-1 ring-[var(--color-line-strong)] outline-none focus:ring-2 focus:ring-accent"
+                          placeholder="at least 8 characters"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={busyId === u.id || chosenPassword.length < 8}
+                        className="rounded-[var(--radius-control)] bg-accent px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-[var(--color-accent-strong)] disabled:opacity-50"
+                      >
+                        Set it
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingPasswordFor(null)}
+                        className="px-2 py-1.5 text-xs text-muted transition hover:text-text"
+                      >
+                        Cancel
+                      </button>
+                      <p className="w-full text-[10px] text-muted">
+                        Overwrites the current password, which cannot be read back out of the
+                        database. The account will need to sign in with this one.
+                      </p>
+                    </form>
+                  )}
+
+                  {/* Permission grants, on their own row so the toggles have room. Only
                        moderators have grants to give: an admin holds everything
                        implicitly and cannot be restricted. Admin-level, matching
                        the role control. */}
@@ -553,6 +680,18 @@ export default function UserAdmin({ canManage = false, canEditRoles = false, sco
             : canManage
               ? 'You can view accounts and reset passwords. Changing roles needs an admin.'
               : 'Read-only.'}
+      </p>
+
+      {/* Said plainly, because the alternative is somebody asking for a
+          "show password" button that can never exist. Passwords are stored as
+          one-way hashes; what staff can do is overwrite one with a value they
+          already know. */}
+      <p className="rounded-[var(--radius-control)] bg-bg px-3 py-2 text-[11px] leading-relaxed text-muted ring-1 ring-[var(--color-line-strong)]">
+        Nobody can read a password back. They are stored as one-way hashes, so there is no view,
+        export or admin override that shows one &mdash; including yours. What you can do is{' '}
+        <strong className="font-semibold text-text">set</strong> a password you already know with
+        &ldquo;Set password&rdquo;, or generate one and read it once with &ldquo;Generate
+        password&rdquo;.
       </p>
 
       {/* Accounts inside their recovery window. Kept separate from the main

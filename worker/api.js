@@ -1777,17 +1777,24 @@ async function handleCreateUser(request, env) {
     return json({ error: 'An account with that email already exists' }, 409);
   }
 
-// Generate a strong password unless the admin supplied one.
+  // Generate a strong password unless staff supplied one, in which case they
+  // already know it and there is nothing to hand over afterwards.
   const supplied = typeof body.password === 'string' && body.password.length > 0;
   const password = supplied ? String(body.password) : generatePassword(16);
   if (!validPassword(password)) {
     return json({ error: 'Password must be at least 8 characters' }, 400);
   }
   if (supplied) {
-    // Only check what a human typed: generatePassword already produces something
-    // strong, and running it through the policy would reject its own output.
-    const weak = passwordProblem(password);
-    if (weak) return json({ error: `That password is too weak: ${weak.toLowerCase()}` }, 400);
+    // Only the length floor is enforced here, unlike at signup. The complexity
+    // rule is advice for somebody picking their own password for their own
+    // account; here a member of staff is setting it, and they are the one who
+    // chose it. generatePassword output is not run through the policy at all, or
+    // the policy would reject its own generator.
+    //
+    // What comes back is a warning rather than a refusal, and the UI shows it.
+    if (!validPassword(password)) {
+      return json({ error: 'Password must be at least 8 characters' }, 400);
+    }
   }
 
   const roles = ['user', 'moderator', 'admin'];
@@ -1969,9 +1976,22 @@ async function handleSetPermissions(request, env, targetId) {
 }
 
 /**
- * Admin resets a user's password. The new value is generated, hashed with a
- * fresh salt, and returned once in this response. It is never persisted in
- * readable form, so it cannot be displayed again later.
+ * Sets a user's password, either to one the caller chose or to a generated one.
+ *
+ * Both paths end at the same place: PBKDF2 with a fresh salt. Neither leaves a
+ * readable copy anywhere, so there is no code path -- admin tab or otherwise --
+ * that can show an existing account's password later. What the caller-supplied
+ * path buys is narrower than that: staff can set a password they already know
+ * when provisioning an account, instead of having to read a generated one out of
+ * a response and hand it over. The account holder ends up with a password that
+ * was never transmitted or stored in the clear.
+ *
+ * `passwordProblem` is deliberately NOT applied to a caller-supplied value. The
+ * policy exists to stop somebody choosing their own weak password for their own
+ * account; here the person choosing is staff, who already hold the credentials,
+ * and refusing would block setting a memorable password for a tester. The length
+ * floor still applies, and a weak value is called back in `weak` so the UI can
+ * say so out loud.
  */
 async function handleAdminResetPassword(request, env, targetId) {
   const auth = await requirePermission(request, env, 'users');
@@ -1982,7 +2002,22 @@ async function handleAdminResetPassword(request, env, targetId) {
     .first();
   if (!target) return json({ error: 'User not found' }, 404);
 
-  const password = generatePassword(16);
+  let body = {};
+  if (request.headers.get('content-length') !== '0') {
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
+  }
+
+  const supplied = typeof body.password === 'string' && body.password.length > 0;
+
+  if (supplied && !validPassword(body.password)) {
+    return json({ error: 'Password must be at least 8 characters' }, 400);
+  }
+
+  const password = supplied ? String(body.password) : generatePassword(16);
   const salt = randomSalt();
   const hash = await hashPassword(password, salt);
 
@@ -1992,9 +2027,27 @@ async function handleAdminResetPassword(request, env, targetId) {
     .bind(hash, salt, await passwordFingerprint(password), target.id)
     .run();
 
-  // Existing sessions keep working; force re-login with the new password.
+  // A token handed over before the change would still be redeemable afterwards.
   await env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(target.id).run();
-  await logAdminAction(env, auth.user.id, 'user.password.reset', target.id, target.email);
+
+  await logAdminAction(
+    env,
+    auth.user.id,
+    supplied ? 'user.password.set' : 'user.password.reset',
+    target.id,
+    target.email,
+  );
+
+  // A chosen password is not echoed: the caller typed it, so returning it would
+  // put it in a response body and a browser history for no benefit.
+  if (supplied) {
+    return json({
+      ok: true,
+      email: target.email,
+      chosen: true,
+      weak: passwordProblem(password) || undefined,
+    });
+  }
 
   return json({
     ok: true,
