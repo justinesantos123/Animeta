@@ -15,6 +15,7 @@ import {
 } from './crypto.js';
 import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
+import { planAccess, EPISODIC_TYPES } from './access.js';
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -456,6 +457,8 @@ const sql = `SELECT * FROM titles ${where.length ? `WHERE ${where.join(' AND ')}
   });
 }
 
+// ---------------------------------------------------------------- titles
+
 async function handleGetTitle(request, env, url, slug) {
   const row = await env.DB.prepare('SELECT * FROM titles WHERE slug = ?').bind(slug).first();
   if (!row) return json({ error: 'Title not found' }, 404);
@@ -474,33 +477,51 @@ async function handleGetTitle(request, env, url, slug) {
     .bind(row.id)
     .all();
 
-  // Anything episodic (series, anime, AI-generated) is behind a login. The
-  // manifests are withheld here rather than hidden in the UI, because a
+  // Access rule:
+  //   - Movies play for anyone, signed out or not.
+  //   - Series, anime and AI titles let a signed-out visitor watch the first
+  //     episode as a preview, then ask them to sign up for episode 2 onwards.
+  //
+  // Access rule:
+  //   - Movies play for anyone, signed out or not.
+  //   - Series, anime and AI titles let a signed-out visitor watch the first
+  //     episode as a preview, then ask them to sign up for episode 2 onwards.
+  //
+  // The manifests are withheld here rather than hidden in the UI, because a
   // signed-out visitor can read the API response directly.
-  const gated = EPISODIC_TYPES.includes(row.type);
-  const user = gated ? await getUser(request, env) : null;
-  const locked = gated && !user;
+  // The rule itself lives in worker/access.js so it can be unit tested directly.
+  // Only episodic titles need the session looked up; movies never gate.
+  const signedIn = EPISODIC_TYPES.includes(row.type) ? Boolean(await getUser(request, env)) : false;
+
+  const plan = planAccess({
+    type: row.type,
+    episodeIds: episodes.results.map((e) => e.id),
+    signedIn,
+  });
 
   const shaped = shapeTitle(row);
 
   return json({
-    title: locked ? { ...shaped, videoUrl: null, locked: true } : shaped,
-    // The listing stays visible so the shape of a season is browsable; only
-    // the playable URLs are removed.
+    title: plan.titlePlayable ? shaped : { ...shaped, videoUrl: null },
+    // Every episode stays listed so the shape of the season is browsable; only
+    // the playable URLs are removed, and `locked` drives the prompt.
     episodes: episodes.results.map((e) =>
-      locked ? { ...e, video_manifest_url: null, subtitles_url: null, locked: true } : e,
+      plan.playableEpisodeIds.has(e.id)
+        ? e
+        : { ...e, video_manifest_url: null, subtitles_url: null, locked: true },
     ),
-    locked,
+    locked: plan.locked,
+    // Episode 1 plays but the rest do not, which is the state the gate copy is
+    // written for.
+    previewOnly: plan.previewAvailable,
+    canPlayFirstEpisode: plan.previewAvailable,
+    hasEpisodes: plan.hasEpisodes,
     seasons: seasons.results,
     episodeCount: episodes.results.length,
   });
 }
 
 const STAFF_ROLES = ['admin', 'moderator'];
-
-// Types with an episode structure. Watching any of these needs an account;
-// movies are the one type that plays for a signed-out visitor.
-const EPISODIC_TYPES = ['series', 'anime', 'ai'];
 
 /** True when the signed-in account is staff (any tier below owner). */
 async function requireStaff(request, env) {

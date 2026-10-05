@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { planAccess } from '../worker/access.js';
 
 const distDir = new URL('../dist/', import.meta.url).pathname.replace(/^\//, '');
 const html = readFileSync(join(distDir, 'index.html'), 'utf8');
@@ -297,33 +298,56 @@ async function checkGreeting() {
 }
 
 /**
- * The core access rule: browsing is open, but episodic playback needs an
- * account. Covers anime, series and AI both signed out (gate shown) and
- * signed in (player shown), plus a movie staying free when signed out.
+ * The core access rule:
+ *   - Movies play for anyone.
+ *   - Series/anime/AI: episode 1 plays free, episode 2 onwards needs an account.
+ *
+ * Covers every case the rule can land in, including the episode-less episodic
+ * title where there is no free episode to fall back on.
  */
 async function checkPlaybackGate() {
   const EPISODIC = ['tidefall-academy', 'solaris-requiem', 'lantern-of-lost-things'];
 
-  function titleBody(slug, type, locked) {
+  /** Mirrors the Worker's response, derived from the real access rule. */
+  function titleBody(slug, type, signedIn, { episodes = 3 } = {}) {
+    const ids = Array.from({ length: episodes }, (_, i) => `e${i + 1}`);
+    // The same function the Worker calls, so this mock cannot drift from it.
+    const plan = planAccess({ type, episodeIds: ids, signedIn });
+
+    const rows = ids.map((id, i) => {
+      const playable = plan.playableEpisodeIds.has(id);
+      return {
+        id,
+        season_id: 's1',
+        episode_number: i + 1,
+        title: `Episode ${i + 1}`,
+        runtime: '24:00',
+        video_manifest_url: playable ? 'https://example.test/ep1.m3u8' : null,
+        subtitles_url: playable ? '/subtitles/sample.vtt' : null,
+        ...(playable ? {} : { locked: true }),
+      };
+    });
+
     return {
       title: {
         id: slug, slug, type, title: slug,
         synopsis: 'Test synopsis.', genres: ['Drama'], releaseDate: '2026-01-01',
         runtime: '24m', rating: 8, posterUrl: '', backdropUrl: '',
-        videoUrl: locked ? null : 'https://example.test/stream.m3u8',
-        subtitlesUrl: locked ? null : '/subtitles/sample.vtt',
-        featured: false, locked,
+        videoUrl: plan.titlePlayable ? 'https://example.test/stream.m3u8' : null,
+        subtitlesUrl: plan.titlePlayable ? '/subtitles/sample.vtt' : null,
+        featured: false,
       },
-      locked,
-      seasons: locked ? [{ id: 's1', season_number: 1, description: 'Season one' }] : [],
-      episodes: locked
-        ? [{ id: 'e1', season_id: 's1', episode_number: 1, title: 'Episode One', runtime: '24:00', video_manifest_url: null, subtitles_url: null, locked: true }]
-        : [{ id: 'e1', season_id: 's1', episode_number: 1, title: 'Episode One', runtime: '24:00', video_manifest_url: 'https://example.test/ep1.m3u8', subtitles_url: '/subtitles/sample.vtt' }],
-      episodeCount: 1,
+      locked: plan.locked,
+      previewOnly: plan.previewAvailable,
+      canPlayFirstEpisode: plan.previewAvailable,
+      hasEpisodes: plan.hasEpisodes,
+      seasons: episodes ? [{ id: 's1', season_number: 1, description: 'One' }] : [],
+      episodes: episodes ? rows : [],
+      episodeCount: episodes,
     };
   }
 
-  async function open(route, { signedIn }) {
+  async function open(route, { signedIn, episodes = 3 }) {
     const errors = [];
     const virtualConsole = new VirtualConsole();
     virtualConsole.on('jsdomError', (e) => errors.push(e.message));
@@ -344,26 +368,42 @@ async function checkPlaybackGate() {
     });
 
     const slug = route.replace('/title/', '');
-    const type = slug === 'neon-courier' ? 'movie' : slug === 'tidefall-academy' ? 'anime' : slug === 'lantern-of-lost-things' ? 'ai' : 'series';
-    const episodic = type !== 'movie';
+    const type = slug === 'neon-courier'
+      ? 'movie'
+      : slug === 'tidefall-academy' || slug === 'neon-kamisarai'
+        ? 'anime'
+        : slug === 'lantern-of-lost-things'
+          ? 'ai'
+          : 'series';
 
     window.fetch = async (input) => {
       const path = String(typeof input === 'string' ? input : input?.url || '')
         .replace(/^https:\/\/animeta\.test/, '')
         .split('?')[0];
       if (path === '/api/auth/me') {
-        return json({ user: signedIn ? { id: 'u1', email: 'a@b.com', username: 'kaede', role: 'user' } : null });
+        return json({
+          user: signedIn
+            ? { id: 'u1', email: 'a@b.com', username: 'kaede', role: 'user' }
+            : null,
+        });
       }
-      if (path.startsWith('/api/titles/')) return json(titleBody(slug, type, episodic && !signedIn));
+      if (path.startsWith('/api/titles/')) {
+        return json(titleBody(slug, type, signedIn, { episodes }));
+      }
       if (path === '/api/titles') return json({ titles: [] });
       if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
-      if (path === '/api/settings') return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+      if (path === '/api/settings') {
+        return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+      }
       if (path === '/api/watchlist') return json({ titles: [] });
       return json({});
     };
 
     if (!window.matchMedia) {
-      window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+      window.matchMedia = () => ({
+        matches: false, addListener() {}, removeListener() {},
+        addEventListener() {}, removeEventListener() {},
+      });
     }
     window.scrollTo = () => {};
     window.HTMLMediaElement.prototype.play = () => Promise.resolve();
@@ -376,44 +416,77 @@ async function checkPlaybackGate() {
 
     await new Promise((r) => setTimeout(r, 550));
 
-    const text = (window.document.getElementById('root')?.textContent || '').replace(/\s+/g, ' ');
+    const doc = window.document;
+    const text = (doc.getElementById('root')?.textContent || '').replace(/\s+/g, ' ');
+    // One row per episode. The Free / Sign up markers carry a data attribute so
+    // this does not depend on their wording or on what follows in the row.
+    const listRows = [...doc.querySelectorAll('main ul li')].map((li) =>
+      li.textContent.replace(/\s+/g, ' ').trim(),
+    );
+    const freeBadges = doc.querySelectorAll('[data-episode-access="free"]').length;
+    const lockedBadges = doc.querySelectorAll('[data-episode-access="locked"]').length;
+
+    // jsdom has no media stack, so <video> is not a reliable signal here.
+    const hasPlayer = Boolean(doc.querySelector('video'));
+
     window.close();
-    return { text, errors };
+    return { text, errors, freeBadges, lockedBadges, rowCount: listRows.length, hasPlayer, rows: listRows };
   }
 
   let failed = 0;
 
-  // Signed out: every episodic type is gated, with no manifest anywhere.
+  // Signed out: episode 1 plays, the rest are marked, and nothing leaks.
   for (const slug of EPISODIC) {
-    const { text, errors } = await open(`/title/${slug}`, { signedIn: false });
-    const gated = /Sign in to watch/.test(text);
-    const leaked = /example\.test\/(stream|ep1)\.m3u8/.test(text);
+    const r = await open(`/title/${slug}`, { signedIn: false });
+    const { text, errors, freeBadges, lockedBadges, hasPlayer } = r;
 
     if (errors.length) {
       failed++;
-      console.log(`FAIL gate  ${slug} signed out errored: ${errors[0].split('\n')[0]}`);
-    } else if (!gated) {
+      console.log(`FAIL gate  ${slug} errored: ${errors[0].split('\n')[0]}`);
+    } else if (/Sign in to continue/.test(text)) {
       failed++;
-      console.log(`FAIL gate  ${slug} signed out shows no sign-in gate`);
-    } else if (leaked) {
+      console.log(`FAIL gate  ${slug} blocks the whole title; episode 1 should be free`);
+    } else if (!hasPlayer) {
       failed++;
-      console.log(`FAIL gate  ${slug} leaked a playable URL to a signed-out visitor`);
+      console.log(`FAIL gate  ${slug} shows no player, so the free episode is not watchable`);
+    } else if (freeBadges !== 1) {
+      failed++;
+      console.log(
+        `FAIL gate  ${slug} marked ${freeBadges} episodes free, expected 1 ` +
+          `(rows: ${JSON.stringify(r.rows)})`,
+      );
+    } else if (lockedBadges !== 2) {
+      failed++;
+      console.log(
+        `FAIL gate  ${slug} marked ${lockedBadges} episodes as needing sign-up, expected 2`,
+      );
+    } else if (/example\.test\/(stream|ep1)\.m3u8/.test(text)) {
+      failed++;
+      console.log(`FAIL gate  ${slug} rendered a raw manifest URL into the page`);
     } else {
-      console.log(`ok   ${slug} (${/anime/.test(text) ? 'anime' : ''}) locked for signed-out visitors`);
+      console.log(`ok   ${slug} signed out: episode 1 free and playing, 2 need an account`);
     }
   }
 
-  // Signed in: the player replaces the gate.
+  // Signed in: every episode plays and nothing is marked as locked.
   {
-    const { text, errors } = await open('/title/tidefall-academy', { signedIn: true });
+    const { text, errors, lockedBadges, hasPlayer } = await open('/title/tidefall-academy', {
+      signedIn: true,
+    });
     if (errors.length) {
       failed++;
       console.log(`FAIL gate  anime signed in errored: ${errors[0].split('\n')[0]}`);
-    } else if (/Sign in to watch/.test(text)) {
+    } else if (/Sign in to continue|Members only/.test(text)) {
       failed++;
-      console.log('FAIL gate  anime still gated for a signed-in viewer');
+      console.log('FAIL gate  anime still shows the gate for a signed-in viewer');
+    } else if (!hasPlayer) {
+      failed++;
+      console.log('FAIL gate  anime shows no player for a signed-in viewer');
+    } else if (lockedBadges !== 0) {
+      failed++;
+      console.log(`FAIL gate  anime still marks ${lockedBadges} episodes as locked when signed in`);
     } else {
-      console.log('ok   anime plays for a signed-in viewer');
+      console.log('ok   anime plays every episode for a signed-in viewer');
     }
   }
 
@@ -423,11 +496,29 @@ async function checkPlaybackGate() {
     if (errors.length) {
       failed++;
       console.log(`FAIL gate  movie errored: ${errors[0].split('\n')[0]}`);
-    } else if (/Sign in to watch/.test(text)) {
+    } else if (/Sign in to continue|Members only/.test(text)) {
       failed++;
       console.log('FAIL gate  a movie is gated, but movies should play free');
     } else {
       console.log('ok   movies play without an account');
+    }
+  }
+
+  // An episodic title with no episodes has no free preview to fall back on,
+  // so the whole thing must be gated rather than showing a dead player.
+  {
+    const { text, errors } = await open('/title/solaris-requiem', {
+      signedIn: false,
+      episodes: 0,
+    });
+    if (errors.length) {
+      failed++;
+      console.log(`FAIL gate  episodic-without-episodes errored: ${errors[0].split('\n')[0]}`);
+    } else if (!/Sign in to continue/.test(text)) {
+      failed++;
+      console.log('FAIL gate  an episodic title with no episodes should be gated entirely');
+    } else {
+      console.log('ok   an episodic title with no episodes is gated entirely');
     }
   }
 

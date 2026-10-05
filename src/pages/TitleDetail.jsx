@@ -16,12 +16,12 @@ export default function TitleDetail() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeEpisode, setActiveEpisode] = useState(null);
+  const [chosenId, setChosenId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setActiveEpisode(null);
+    setChosenId(null);
     api
       .getTitle(slug)
       .then((d) => {
@@ -49,6 +49,21 @@ export default function TitleDetail() {
     },
     [user, slug],
   );
+
+  // Stable identity so the useMemo dependencies below are not rebuilt each render.
+  const episodes = useMemo(() => data?.episodes || [], [data]);
+  const episodic = data?.title ? isEpisodic(data.title.type) : false;
+
+  // Which episode is playable without an account. The Worker marks every
+  // locked episode, so the first unlocked one is the free preview.
+  const freeEpisode = useMemo(() => episodes.find((e) => !e.locked) ?? null, [episodes]);
+
+  // Defaults to the free episode on an episodic title so the player is never
+  // an empty box; otherwise falls back to the title-level stream.
+  const chosenEpisode = useMemo(() => {
+    if (chosenId) return episodes.find((e) => e.id === chosenId) ?? null;
+    return freeEpisode;
+  }, [chosenId, episodes, freeEpisode]);
 
   // Group episodes under their season so a multi-season show reads correctly.
   const episodesBySeason = useMemo(() => {
@@ -90,14 +105,24 @@ export default function TitleDetail() {
 
   const item = data.title;
   const saved = has(item.slug);
-  const locked = Boolean(data.locked);
-  const episodic = isEpisodic(item.type);
+  const episode = chosenEpisode;
 
-  // With no episode chosen, fall back to the title-level stream.
-  const episode = activeEpisode || null;
-  const streamUrl = episode ? episode.video_manifest_url : item.videoUrl;
-  const subtitleUrl = episode ? episode.subtitles_url : item.subtitlesUrl;
-  const nowPlaying = episode ? `${item.title} — E${episode.episode_number}` : item.title;
+  // A locked episode that was picked shows the gate instead of playing.
+  const gatedEpisode = episode?.locked ? episode : null;
+  const playableEpisode = gatedEpisode ? null : episode;
+
+  const streamUrl = playableEpisode ? playableEpisode.video_manifest_url : item.videoUrl;
+  const subtitleUrl = playableEpisode ? playableEpisode.subtitles_url : item.subtitlesUrl;
+  const nowPlaying = playableEpisode
+    ? `${item.title} — E${playableEpisode.episode_number}`
+    : item.title;
+
+  // Nothing playable at all: an episodic title with no free episode.
+  const nothingPlayable = Boolean(data.locked) || (episodic && !streamUrl && !freeEpisode);
+
+  function pickEpisode(ep) {
+    setChosenId(ep.id);
+  }
 
   const related = titles
     .filter((t) => t.slug !== item.slug && (t.genres || []).some((g) => item.genres?.includes(g)))
@@ -126,11 +151,17 @@ export default function TitleDetail() {
       </section>
 
       <div className="mx-auto max-w-7xl space-y-8 px-4">
-        {locked ? (
-          <PlaybackGate title={item.title} episodeCount={data.episodeCount ?? 0} />
+        {gatedEpisode ? (
+          <PlaybackGate
+            title={item.title}
+            episodeTitle={gatedEpisode.title}
+            firstEpisodeIsFree={Boolean(freeEpisode)}
+          />
+        ) : nothingPlayable ? (
+          <PlaybackGate title={item.title} firstEpisodeIsFree={false} />
         ) : streamUrl ? (
           <VideoPlayer
-            key={episode ? episode.id : 'title'}
+            key={playableEpisode ? playableEpisode.id : 'title'}
             src={streamUrl}
             poster={item.backdropUrl}
             subtitlesUrl={subtitleUrl}
@@ -145,25 +176,28 @@ export default function TitleDetail() {
 
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="mr-auto text-lg font-bold">
-            {episode ? (
+            {playableEpisode ? (
               <span className="flex flex-wrap items-center gap-2">
                 <span>
-                  S{episodesBySeason.find((g) => g.episodes.includes(episode))?.number ?? 1} · E
-                  {episode.episode_number}
+                  S
+                  {episodesBySeason.find((g) => g.episodes.includes(playableEpisode))?.number ?? 1}{' '}
+                  · E{playableEpisode.episode_number}
                 </span>
-                <span className="text-base font-semibold text-muted">{episode.title}</span>
+                <span className="text-base font-semibold text-muted">
+                  {playableEpisode.title}
+                </span>
               </span>
             ) : (
               item.title
             )}
           </h2>
-          {episode && (
+          {playableEpisode && chosenId && (
             <button
               type="button"
-              onClick={() => setActiveEpisode(null)}
+              onClick={() => setChosenId(null)}
               className="rounded-lg bg-surface px-3 py-2 text-xs font-semibold text-muted ring-1 ring-white/10 transition hover:bg-surface-2"
             >
-              Back to title
+              Back to episode 1
             </button>
           )}
           <button
@@ -210,19 +244,16 @@ export default function TitleDetail() {
                   </h3>
                   <ul className="divide-y divide-white/5 overflow-hidden rounded-xl bg-surface ring-1 ring-white/5">
                     {group.episodes.map((ep) => {
-                      const isActive = episode?.id === ep.id;
+                      const isActive = playableEpisode?.id === ep.id;
                       return (
                         <li key={ep.id}>
                           <button
                             type="button"
-                            disabled={locked}
-                            onClick={() => setActiveEpisode(ep)}
+                            onClick={() => pickEpisode(ep)}
                             aria-current={isActive ? 'true' : undefined}
-                            className={`flex w-full items-center gap-4 px-4 py-3 text-left transition ${
-                              locked
-                                ? 'cursor-not-allowed opacity-60'
-                                : 'hover:bg-surface-2'
-                            } ${isActive ? 'bg-surface-2' : ''}`}
+                            className={`flex w-full items-center gap-4 px-4 py-3 text-left transition hover:bg-surface-2 ${
+                              isActive ? 'bg-surface-2' : ''
+                            }`}
                           >
                             <span className="w-8 shrink-0 text-center text-xs font-semibold text-accent">
                               {ep.episode_number}
@@ -230,9 +261,19 @@ export default function TitleDetail() {
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-sm font-medium">{ep.title}</span>
                             </span>
-                            {locked && (
-                              <span className="shrink-0 rounded bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent">
-                                Sign in
+                            {ep.locked ? (
+                              <span
+                                data-episode-access="locked"
+                                className="shrink-0 rounded bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent"
+                              >
+                                Sign up
+                              </span>
+                            ) : (
+                              <span
+                                data-episode-access="free"
+                                className="shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted"
+                              >
+                                Free
                               </span>
                             )}
                             {ep.runtime && (
@@ -249,10 +290,13 @@ export default function TitleDetail() {
           </section>
         )}
 
-        {!episodic && (
+        {episodic && freeEpisode && !user && (
           <p className="text-xs text-muted">
-            Movies play without an account. Series, anime and AI titles need a sign-in to watch.
+            Episode 1 plays free. Sign up to watch episode 2 onwards and keep your progress.
           </p>
+        )}
+        {!episodic && (
+          <p className="text-xs text-muted">Movies play without an account.</p>
         )}
 
         <section aria-labelledby="related-heading">
