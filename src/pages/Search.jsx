@@ -48,9 +48,10 @@ export default function Search() {
           className="rounded-lg bg-surface px-3 py-2.5 text-sm text-text ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-accent"
         >
 <option value="all">All types</option>
-        <option value="movie">Movies</option>
-        <option value="series">Series</option>
-        <option value="ai">AI Generated</option>
+          <option value="movie">Movies</option>
+          <option value="series">Series</option>
+          <option value="anime">Anime</option>
+          <option value="ai">AI Generated</option>
         </select>
       </div>
 

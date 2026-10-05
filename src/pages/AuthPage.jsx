@@ -1,12 +1,22 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+
+/** Only same-site paths, so `next` cannot be used as an open redirect. */
+function safeNext(value) {
+  if (!value) return '/';
+  return value.startsWith('/') && !value.startsWith('//') ? value : '/';
+}
 
 export default function AuthPage() {
   const { user, login, signup } = useAuth();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
 
-  const [mode, setMode] = useState('login');
+  // The playback gate sends people here with ?next=/title/... so signing in
+  // drops them straight back on the episode they were trying to watch.
+  const next = safeNext(params.get('next'));
+  const [mode, setMode] = useState(params.get('mode') === 'signup' ? 'signup' : 'login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
@@ -20,7 +30,7 @@ export default function AuthPage() {
         <p className="mt-2 text-sm text-muted">{user.email}</p>
         <button
           type="button"
-          onClick={() => navigate('/')}
+          onClick={() => navigate(next, { replace: true })}
           className="mt-6 rounded-lg bg-cta px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
         >
           Continue browsing
@@ -36,7 +46,7 @@ export default function AuthPage() {
     try {
       if (mode === 'login') await login(email, password);
       else await signup(email, password, username.trim());
-      navigate('/');
+      navigate(next, { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

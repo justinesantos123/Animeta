@@ -198,6 +198,10 @@ for (const role of ['admin', 'moderator']) {
   total += (await run(role)).failed;
 }
 
+total += await checkGreeting();
+total += await checkPlaybackGate();
+total += await checkBrowseListing();
+
 // Drives a real sign-in through the UI and asserts the greeting appears.
 async function checkGreeting() {
   const errors = [];
@@ -291,7 +295,255 @@ async function checkGreeting() {
   return 0;
 }
 
-total += await checkGreeting();
+/**
+ * The core access rule: browsing is open, but episodic playback needs an
+ * account. Covers anime, series and AI both signed out (gate shown) and
+ * signed in (player shown), plus a movie staying free when signed out.
+ */
+async function checkPlaybackGate() {
+  const EPISODIC = ['tidefall-academy', 'solaris-requiem', 'lantern-of-lost-things'];
 
-console.log(total === 0 ? '\nAll staff tabs rendered.' : `\n${total} tab render(s) failed.`);
+  function titleBody(slug, type, locked) {
+    return {
+      title: {
+        id: slug, slug, type, title: slug,
+        synopsis: 'Test synopsis.', genres: ['Drama'], releaseDate: '2026-01-01',
+        runtime: '24m', rating: 8, posterUrl: '', backdropUrl: '',
+        videoUrl: locked ? null : 'https://example.test/stream.m3u8',
+        subtitlesUrl: locked ? null : '/subtitles/sample.vtt',
+        featured: false, locked,
+      },
+      locked,
+      seasons: locked ? [{ id: 's1', season_number: 1, description: 'Season one' }] : [],
+      episodes: locked
+        ? [{ id: 'e1', season_id: 's1', episode_number: 1, title: 'Episode One', runtime: '24:00', video_manifest_url: null, subtitles_url: null, locked: true }]
+        : [{ id: 'e1', season_id: 's1', episode_number: 1, title: 'Episode One', runtime: '24:00', video_manifest_url: 'https://example.test/ep1.m3u8', subtitles_url: '/subtitles/sample.vtt' }],
+      episodeCount: 1,
+    };
+  }
+
+  async function open(route, { signedIn }) {
+    const errors = [];
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.on('jsdomError', (e) => errors.push(e.message));
+    virtualConsole.on('error', (...a) => errors.push(a.map(String).join(' ')));
+
+    const dom = new JSDOM(html, {
+      url: `https://animeta.test${route}`,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      virtualConsole,
+    });
+    const { window } = dom;
+
+    const json = (body, status = 200) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    });
+
+    const slug = route.replace('/title/', '');
+    const type = slug === 'neon-courier' ? 'movie' : slug === 'tidefall-academy' ? 'anime' : slug === 'lantern-of-lost-things' ? 'ai' : 'series';
+    const episodic = type !== 'movie';
+
+    window.fetch = async (input) => {
+      const path = String(typeof input === 'string' ? input : input?.url || '')
+        .replace(/^https:\/\/animeta\.test/, '')
+        .split('?')[0];
+      if (path === '/api/auth/me') {
+        return json({ user: signedIn ? { id: 'u1', email: 'a@b.com', username: 'kaede', role: 'user' } : null });
+      }
+      if (path.startsWith('/api/titles/')) return json(titleBody(slug, type, episodic && !signedIn));
+      if (path === '/api/titles') return json({ titles: [] });
+      if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
+      if (path === '/api/settings') return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+      if (path === '/api/watchlist') return json({ titles: [] });
+      return json({});
+    };
+
+    if (!window.matchMedia) {
+      window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+    }
+    window.scrollTo = () => {};
+    window.HTMLMediaElement.prototype.play = () => Promise.resolve();
+
+    try {
+      window.eval(bundle);
+    } catch (e) {
+      errors.push(e.message);
+    }
+
+    await new Promise((r) => setTimeout(r, 550));
+
+    const text = (window.document.getElementById('root')?.textContent || '').replace(/\s+/g, ' ');
+    window.close();
+    return { text, errors };
+  }
+
+  let failed = 0;
+
+  // Signed out: every episodic type is gated, with no manifest anywhere.
+  for (const slug of EPISODIC) {
+    const { text, errors } = await open(`/title/${slug}`, { signedIn: false });
+    const gated = /Sign in to watch/.test(text);
+    const leaked = /example\.test\/(stream|ep1)\.m3u8/.test(text);
+
+    if (errors.length) {
+      failed++;
+      console.log(`FAIL gate  ${slug} signed out errored: ${errors[0].split('\n')[0]}`);
+    } else if (!gated) {
+      failed++;
+      console.log(`FAIL gate  ${slug} signed out shows no sign-in gate`);
+    } else if (leaked) {
+      failed++;
+      console.log(`FAIL gate  ${slug} leaked a playable URL to a signed-out visitor`);
+    } else {
+      console.log(`ok   ${slug} (${/anime/.test(text) ? 'anime' : ''}) locked for signed-out visitors`);
+    }
+  }
+
+  // Signed in: the player replaces the gate.
+  {
+    const { text, errors } = await open('/title/tidefall-academy', { signedIn: true });
+    if (errors.length) {
+      failed++;
+      console.log(`FAIL gate  anime signed in errored: ${errors[0].split('\n')[0]}`);
+    } else if (/Sign in to watch/.test(text)) {
+      failed++;
+      console.log('FAIL gate  anime still gated for a signed-in viewer');
+    } else {
+      console.log('ok   anime plays for a signed-in viewer');
+    }
+  }
+
+  // Movies stay free when signed out.
+  {
+    const { text, errors } = await open('/title/neon-courier', { signedIn: false });
+    if (errors.length) {
+      failed++;
+      console.log(`FAIL gate  movie errored: ${errors[0].split('\n')[0]}`);
+    } else if (/Sign in to watch/.test(text)) {
+      failed++;
+      console.log('FAIL gate  a movie is gated, but movies should play free');
+    } else {
+      console.log('ok   movies play without an account');
+    }
+  }
+
+  return failed;
+}
+
+/**
+ * The browse listing must show every type, with counts, while signed out.
+ * This is the "everyone can see the whole catalog" half of the access rule.
+ */
+async function checkBrowseListing() {
+  const CATALOG = [
+    { slug: 'c-series', type: 'series', title: 'C Series', genres: ['Sci-Fi'], rating: 7 },
+    { slug: 'a-movie', type: 'movie', title: 'A Movie', genres: ['Drama'], rating: 8 },
+    { slug: 'b-anime', type: 'anime', title: 'B Anime', genres: ['Action'], rating: 9 },
+    { slug: 'd-ai', type: 'ai', title: 'D AI', genres: ['Experimental'], rating: 8.5 },
+    { slug: 'e-anime', type: 'anime', title: 'E Anime', genres: ['Drama'], rating: 7.5 },
+  ];
+
+  const errors = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', (e) => errors.push(e.message));
+  virtualConsole.on('error', (...a) => errors.push(a.map(String).join(' ')));
+
+  const dom = new JSDOM(html, {
+    url: 'https://animeta.test/browse',
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+    virtualConsole,
+  });
+  const { window } = dom;
+  const doc = window.document;
+
+  const json = (body) => ({ ok: true, status: 200, json: async () => body });
+
+  window.fetch = async (input) => {
+    const path = String(typeof input === 'string' ? input : input?.url || '')
+      .replace(/^https:\/\/animeta\.test/, '')
+      .split('?')[0];
+    // Signed out on purpose.
+    if (path === '/api/auth/me') return json({ user: null });
+    if (path === '/api/titles') {
+      return json({
+        titles: CATALOG.map((t) => ({
+          id: t.slug, ...t, synopsis: 'x', releaseDate: '2026-01-01',
+          runtime: '24m', posterUrl: '', backdropUrl: '', videoUrl: null,
+          subtitlesUrl: null, featured: false,
+        })),
+      });
+    }
+    if (path === '/api/notifications') return json({ notifications: [], unread: 0 });
+    if (path === '/api/settings') return json({ autoReturnNotifications: true, returnAfterDays: 30 });
+    return json({});
+  };
+
+  if (!window.matchMedia) {
+    window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+  }
+  window.scrollTo = () => {};
+
+  try {
+    window.eval(bundle);
+  } catch (e) {
+    errors.push(e.message);
+  }
+  await new Promise((r) => setTimeout(r, 600));
+
+  const headings = [...doc.querySelectorAll('section[aria-labelledby] h2')].map((h) => h.textContent.trim());
+  const chips = [...doc.querySelectorAll('nav[aria-label="Filter by type"] button')].map((b) =>
+    b.textContent.replace(/\s+/g, ' ').trim(),
+  );
+  const cards = doc.querySelectorAll('a[href^="/title/"]').length;
+
+  window.close();
+
+  if (errors.length) {
+    console.log('FAIL browse  runtime errors');
+    for (const e of errors.slice(0, 2)) console.log(`     ${e.split('\n')[0]}`);
+    return 1;
+  }
+
+  const expected = ['Series', 'Anime', 'Movies', 'AI Generated'];
+  const missing = expected.filter((label) => !headings.includes(label));
+  if (missing.length) {
+    console.log(`FAIL browse  missing type sections: ${missing.join(', ')} (saw ${headings.join(', ')})`);
+    return 1;
+  }
+  if (cards !== CATALOG.length) {
+    console.log(`FAIL browse  expected ${CATALOG.length} title cards, got ${cards}`);
+    return 1;
+  }
+  // Per-type counts. The label and count sit in separate spans, so match on
+  // the label and read the trailing number.
+  const countFor = (label) => {
+    const chip = chips.find((c) => c.startsWith(label));
+    if (!chip) return null;
+    const n = Number((chip.match(/(\d+)\s*$/) || [])[1]);
+    return Number.isNaN(n) ? null : n;
+  };
+  const wanted = { Series: 1, Anime: 2, Movies: 1, 'AI Generated': 1 };
+  const bad = Object.entries(wanted).filter(([label, want]) => countFor(label) !== want);
+  if (bad.length) {
+    console.log(
+      `FAIL browse  wrong counts for ${bad.map(([l, w]) => `${l} (wanted ${w}, got ${countFor(l)})`).join(', ')}`,
+    );
+    return 1;
+  }
+
+  console.log(
+    `ok   browse lists all 4 types signed out (${headings.join(', ')}), ${cards} cards`,
+  );
+  return 0;
+}
+
+console.log(
+  total === 0
+    ? '\nAll staff tabs, greeting, playback gate and browse listing rendered.'
+    : `\n${total} check(s) failed.`,
+);
 process.exit(total === 0 ? 0 : 1);

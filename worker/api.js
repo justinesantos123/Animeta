@@ -389,10 +389,18 @@ async function handleListTitles(request, env, url) {
     binds.push(like, like, like);
   }
 
-  const sql = `SELECT * FROM titles ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY featured DESC, rating DESC, title ASC`;
+const sql = `SELECT * FROM titles ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY featured DESC, rating DESC, title ASC`;
 
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
-  return json({ titles: results.map(shapeTitle) });
+
+  // Browsing stays open to everyone, but the playable URL of an episodic
+  // title is withheld here too. Otherwise the listing would hand a signed-out
+  // visitor a direct stream link and make the detail page's gate pointless.
+  return json({
+    titles: results.map((r) =>
+      EPISODIC_TYPES.includes(r.type) ? { ...shapeTitle(r), videoUrl: null } : shapeTitle(r),
+    ),
+  });
 }
 
 async function handleGetTitle(request, env, url, slug) {
@@ -413,14 +421,33 @@ async function handleGetTitle(request, env, url, slug) {
     .bind(row.id)
     .all();
 
+  // Anything episodic (series, anime, AI-generated) is behind a login. The
+  // manifests are withheld here rather than hidden in the UI, because a
+  // signed-out visitor can read the API response directly.
+  const gated = EPISODIC_TYPES.includes(row.type);
+  const user = gated ? await getUser(request, env) : null;
+  const locked = gated && !user;
+
+  const shaped = shapeTitle(row);
+
   return json({
-    title: shapeTitle(row),
+    title: locked ? { ...shaped, videoUrl: null, locked: true } : shaped,
+    // The listing stays visible so the shape of a season is browsable; only
+    // the playable URLs are removed.
+    episodes: episodes.results.map((e) =>
+      locked ? { ...e, video_manifest_url: null, subtitles_url: null, locked: true } : e,
+    ),
+    locked,
     seasons: seasons.results,
-    episodes: episodes.results,
+    episodeCount: episodes.results.length,
   });
 }
 
 const STAFF_ROLES = ['admin', 'moderator'];
+
+// Types with an episode structure. Watching any of these needs an account;
+// movies are the one type that plays for a signed-out visitor.
+const EPISODIC_TYPES = ['series', 'anime', 'ai'];
 
 /** True when the signed-in account is staff (any tier below owner). */
 async function requireStaff(request, env) {

@@ -28,6 +28,7 @@ const routes = [
   '/reset-password?token=abc',
   '/search',
   '/watchlist',
+  '/browse',
   '/kaedeentrans',
   '/admin',
   '/profile',
@@ -64,8 +65,49 @@ for (const route of routes) {
     const url = String(typeof input === 'string' ? input : input?.url || '');
     const path = url.replace(/^https:\/\/animeta\.test/, '').split('?')[0];
 
-    if (path === '/api/titles') return json({ titles: [] });
-    if (path.startsWith('/api/titles/')) return json({ title: null, seasons: [], episodes: [] });
+    if (path === '/api/titles') {
+      return json({
+        titles: [
+          {
+            id: '1', slug: 'a-movie', type: 'movie', title: 'A Movie',
+            synopsis: 'x', genres: ['Drama'], releaseDate: '2026-01-01', runtime: '1h',
+            rating: 8, posterUrl: '', backdropUrl: '', videoUrl: 'u', subtitlesUrl: null, featured: false,
+          },
+          {
+            id: '2', slug: 'b-anime', type: 'anime', title: 'B Anime',
+            synopsis: 'x', genres: ['Action'], releaseDate: '2026-01-02', runtime: '24m',
+            rating: 9, posterUrl: '', backdropUrl: '', videoUrl: null, subtitlesUrl: null, featured: false,
+          },
+          {
+            id: '3', slug: 'c-series', type: 'series', title: 'C Series',
+            synopsis: 'x', genres: ['Sci-Fi'], releaseDate: '2026-01-03', runtime: '45m',
+            rating: 7, posterUrl: '', backdropUrl: '', videoUrl: null, subtitlesUrl: null, featured: false,
+          },
+          {
+            id: '4', slug: 'd-ai', type: 'ai', title: 'D AI',
+            synopsis: 'x', genres: ['Experimental'], releaseDate: '2026-01-04', runtime: '12m',
+            rating: 8.5, posterUrl: '', backdropUrl: '', videoUrl: null, subtitlesUrl: null, featured: false,
+          },
+        ],
+      });
+    }
+    if (path.startsWith('/api/titles/')) {
+      // Signed out, so episodic types come back locked with no manifest.
+      return json({
+        title: {
+          id: '2', slug: 'b-anime', type: 'anime', title: 'B Anime',
+          synopsis: 'x', genres: ['Action'], releaseDate: '2026-01-02', runtime: '24m',
+          rating: 9, posterUrl: '', backdropUrl: '', videoUrl: null, subtitlesUrl: null,
+          featured: false, locked: true,
+        },
+        locked: true,
+        seasons: [{ id: 's1', season_number: 1, description: 'One' }],
+        episodes: [
+          { id: 'e1', season_id: 's1', episode_number: 1, title: 'Ep One', runtime: '24:00', video_manifest_url: null, subtitles_url: null, locked: true },
+        ],
+        episodeCount: 1,
+      });
+    }
     if (path === '/api/announcements') return json({ announcements: [] });
     if (path === '/api/announcements/staff') return json({ announcements: [] });
     if (path === '/api/admin/users') return json({ users: [], ownerEmail: null, mailConfigured: false });
