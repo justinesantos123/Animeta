@@ -235,13 +235,58 @@ check(
   /else if \(!owns\) \{\s*\n\s*return json\(\{ error: 'Ticket not found' \}, 404\);/.test(api),
 );
 check('a missing ticket 404s rather than 403s', /\{ error: 'Ticket not found' \}, 404/.test(api));
-check('closing is staff only', /ticketSide\(user\) !== 'staff'/.test(api));
+check('closing needs the tickets grant', /handleCloseTicket[\s\S]{0,400}requirePermission\(request, env, 'tickets'\)/.test(api));
 check(
   'replying to a closed ticket reopens it',
   /status = 'open', closed_at = NULL, closed_by = NULL/.test(api),
 );
+// Every staff-facing ticket route must go through the same gate. The queue holds
+// every member's address and what they wrote about their problem, so "is a
+// moderator" is not on its own a reason to read it -- being a moderator used to
+// be exactly that, because these four handlers checked the role and not the
+// grant.
 check(
-  'staff are notified of a new ticket',
+  'a single gate resolves the ticket viewer and its side',
+  /async function ticketViewer\(request, env\)/.test(api),
+);
+check(
+  'the gate requires the tickets permission for staff',
+  /if \(side === 'staff'\) \{[\s\S]{0,160}requirePermission\(request, env, 'tickets'\)/.test(api),
+);
+// Staff without the grant fall back to the member view rather than being
+// refused: handleCreateTicket lets staff open a ticket, so refusing to read it
+// back would make that a dead end for the people most likely to use it.
+check(
+  'staff without the grant fall back to their own tickets',
+  /side: 'member'/.test(api.slice(api.indexOf('async function ticketViewer'), api.indexOf('async function handleListTickets'))),
+);
+for (const [name, fn] of [
+  ['handleListTickets', 'handleListTickets'],
+  ['handleGetTicket', 'handleGetTicket'],
+  ['handleReplyTicket', 'handleReplyTicket'],
+  ['handleCloseTicket', 'handleCloseTicket'],
+]) {
+  const start = api.indexOf(`async function ${fn}(`);
+  // Wide enough to reach the gate past a leading comment.
+  const body = api.slice(start, start + 500);
+  check(
+    `${name} goes through the gate`,
+    /ticketViewer\(request, env\)|requirePermission\(request, env, 'tickets'\)/.test(body),
+    body.replace(/\s+/g, ' ').slice(0, 70),
+  );
+}
+// And none of them may decide "is this staff?" on its own any more.
+check(
+  'no ticket handler gates on the role alone',
+  !/ticketSide\(user\) !== 'staff'/.test(api),
+);
+// Opening a ticket is a member action, so it is deliberately not gated.
+check(
+  'creating a ticket needs no permission',
+  /async function handleCreateTicket[\s\S]{0,200}getUser\(request, env\)/.test(api),
+);
+
+check('staff are notified of a new ticket',
   /kind: 'ticket'/.test(api) && /userIds: staffRecipients/.test(api),
 );
 check(

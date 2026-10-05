@@ -566,6 +566,16 @@ async function deriveUsername(env, email) {
     .slice(0, 24);
   let candidate = (base || 'user').replace(/^[^a-z0-9]+/, '').slice(0, 24) || 'user';
 
+  // The reserved list exists so a handle cannot be mistaken for the site itself
+  // or for staff, and validateUsername enforces it on the signup and profile
+  // paths. Deriving a handle skipped it, so any account whose address was
+  // staff@, help@, admin@, moderator@ or similar silently ended up holding a
+  // reserved name that no member was allowed to pick. A number is appended until
+  // it is both free and not reserved.
+  if (RESERVED_USERNAMES.has(candidate)) {
+    candidate = `${candidate}${randomHex(2)}`;
+  }
+
   for (let attempt = 0; attempt < 50; attempt++) {
     if (candidate.length < 3) candidate = `${candidate}user`;
     // No deleted_at filter, matching the unique index: an account inside its
@@ -578,6 +588,9 @@ async function deriveUsername(env, email) {
       .first();
     if (!taken) return candidate;
     candidate = `${base.slice(0, 22)}${attempt + 1}`;
+    if (RESERVED_USERNAMES.has(candidate)) {
+      candidate = `${candidate}${randomHex(2)}`;
+    }
   }
   return `${base}${randomHex(3)}`;
 }
@@ -2725,6 +2738,33 @@ function ticketSide(user) {
   return STAFF_ROLES.includes(user.role) ? 'staff' : 'member';
 }
 
+/**
+ * Resolves who is asking about tickets, gating the staff queue.
+ *
+ * A member always gets their own tickets. A staff member gets the queue only
+ * with the `tickets` grant, because the queue holds every member's email address
+ * and whatever they wrote about their problem -- being a moderator is not on its
+ * own a reason to read that.
+ *
+ * Staff without the grant fall back to the member view rather than being refused
+ * outright. handleCreateTicket lets anybody open a ticket, including staff, so a
+ * moderator who filed one about their own account has to be able to read it back;
+ * otherwise creating a ticket becomes a dead end for exactly the people most
+ * likely to file one. Falling back discloses nothing they did not write.
+ */
+async function ticketViewer(request, env) {
+  const user = await getUser(request, env);
+  if (!user) return { error: json({ error: 'Authentication required' }, 401) };
+
+  const side = ticketSide(user);
+  if (side === 'staff') {
+    const auth = await requirePermission(request, env, 'tickets');
+    if (!auth.error) return { user, side };
+    return { user, side: 'member' };
+  }
+  return { user, side };
+}
+
 function shapeTicket(row, extra = {}) {
   return {
     id: row.id,
@@ -2746,10 +2786,10 @@ function shapeTicket(row, extra = {}) {
  * "the queue" are the same resource seen from different sides.
  */
 async function handleListTickets(request, env, url) {
-  const user = await getUser(request, env);
-  if (!user) return json({ error: 'Authentication required' }, 401);
+  const viewer = await ticketViewer(request, env);
+  if (viewer.error) return viewer.error;
+  const { user, side } = viewer;
 
-  const side = ticketSide(user);
   const wantsStaffView = side === 'staff';
 
   let status = url.searchParams.get('status');
@@ -2916,23 +2956,23 @@ async function handleCreateTicket(request, env) {
  * else's conversation by guessing an id.
  */
 async function handleGetTicket(request, env, id) {
-  const user = await getUser(request, env);
-  if (!user) return json({ error: 'Authentication required' }, 401);
+  const viewer = await ticketViewer(request, env);
+  if (viewer.error) return viewer.error;
+  const { user, side } = viewer;
 
-  const side = ticketSide(user);
+  const staff = side === 'staff';
+
   const ticket = await env.DB.prepare(
     `SELECT t.*, u.email AS requester_email, u.username AS requester_username
      FROM tickets t JOIN users u ON u.id = t.user_id WHERE t.id = ?`,
   )
     .bind(id)
     .first();
-
   if (!ticket) return json({ error: 'Ticket not found' }, 404);
 
-  const owns = ticket.user_id === user.id;
-  const staff = side === 'staff';
   // A member can only ever read their own. Staff can read a member's ticket but
   // not a staff member's, which keeps the queue about members' problems.
+  const owns = ticket.user_id === user.id;
   const openedByStaff = (await roleOf(env, ticket.user_id)) !== 'user';
   if (!owns && !(staff && !openedByStaff)) {
     return json({ error: 'Ticket not found' }, 404);
@@ -2981,8 +3021,9 @@ async function roleOf(env, userId) {
  * dropping their message because staff had closed it would lose it.
  */
 async function handleReplyTicket(request, env, id) {
-  const user = await getUser(request, env);
-  if (!user) return json({ error: 'Authentication required' }, 401);
+  const viewer = await ticketViewer(request, env);
+  if (viewer.error) return viewer.error;
+  const { user, side } = viewer;
 
   let body;
   try {
@@ -2991,7 +3032,6 @@ async function handleReplyTicket(request, env, id) {
     return json({ error: 'Invalid JSON body' }, 400);
   }
 
-  const side = ticketSide(user);
   const ticket = await env.DB.prepare('SELECT * FROM tickets WHERE id = ?')
     .bind(id)
     .first();
@@ -3059,11 +3099,12 @@ async function handleReplyTicket(request, env, id) {
  * by mistake is not a dead end.
  */
 async function handleCloseTicket(request, env, id) {
-  const user = await getUser(request, env);
-  if (!user) return json({ error: 'Authentication required' }, 401);
-  if (ticketSide(user) !== 'staff') {
-    return json({ error: 'Staff access required' }, 403);
-  }
+  // The gate carries both conditions: a member gets "authentication required",
+  // a moderator without the grant gets the permission message, and neither can
+  // reach the row.
+  const auth = await requirePermission(request, env, 'tickets');
+  if (auth.error) return auth.error;
+  const user = auth.user;
 
   const ticket = await env.DB.prepare('SELECT * FROM tickets WHERE id = ?')
     .bind(id)
