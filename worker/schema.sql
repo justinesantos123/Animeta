@@ -44,6 +44,18 @@ CREATE TABLE IF NOT EXISTS titles (
   -- from the Internet Archive, NULL for a hand-pasted URL. Lets the UI label
   -- provenance instead of implying one source.
   video_source  TEXT,
+  -- Which TMDB record this title was posted from, kept so availability can be
+  -- refreshed later without staff retyping the id. external_source is the TMDB
+  -- namespace ('movie' or 'tv') and is stored rather than inferred from `type`,
+  -- because staff can retype a title after posting.
+  external_id      TEXT,
+  external_source  TEXT,
+  -- Where the title can legally be watched, as a snapshot of TMDB's
+  -- JustWatch-backed availability at the time staff last ran a lookup.
+  -- Stored rather than fetched per view so a public catalog page never spends
+  -- TMDB quota, and because availability changes slowly enough that staff can
+  -- refresh it deliberately. NULL means "not looked up yet".
+  watch_providers TEXT,
   subtitles_url TEXT,
   featured      INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),

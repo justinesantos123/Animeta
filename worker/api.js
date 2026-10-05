@@ -16,7 +16,7 @@ import {
 import { sendPasswordResetEmail, mailConfigured } from './mailer.js';
 import { hitRateLimit, clearRateLimit, passwordProblem } from './ratelimit.js';
 import { planAccess, EPISODIC_TYPES } from './access.js';
-import { lookupExternalId } from './tmdb.js';
+import { lookupExternalId, fetchWatchProviders, normaliseRegion } from './tmdb.js';
 import { searchArchive, resolveArchiveItem } from './archive.js';
 
 const JSON_HEADERS = {
@@ -183,6 +183,30 @@ function parseGenres(value) {
   }
 }
 
+/** Same tolerance as parseGenres, for the stored availability snapshot. */
+function parseWatchProviders(value) {
+  if (value && typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(value ?? 'null');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prepares the availability snapshot for storage.
+ *
+ * `undefined` means the request never mentioned it, which must leave whatever is
+ * already stored untouched — an edit that changes a synopsis must not silently
+ * wipe the availability. An explicit `null` clears it.
+ */
+function encodeWatchProviders(value, existing) {
+  if (value === undefined) return existing ?? null;
+  if (value === null) return null;
+  return JSON.stringify(value);
+}
+
 function shapeTitle(row) {
   return {
     id: row.id,
@@ -196,8 +220,11 @@ function shapeTitle(row) {
     rating: row.rating,
     posterUrl: row.poster_url,
     backdropUrl: row.backdrop_url,
-    videoUrl: row.video_url,
+videoUrl: row.video_url,
     videoSource: row.video_source ?? null,
+    externalId: row.external_id ?? null,
+    externalSource: row.external_source ?? null,
+    watchProviders: parseWatchProviders(row.watch_providers),
     subtitlesUrl: row.subtitles_url,
     featured: Boolean(row.featured),
   };
@@ -625,8 +652,9 @@ async function handleCreateTitle(request, env) {
 
   await env.DB.prepare(
     `INSERT INTO titles (id, slug, type, title, synopsis, genres, release_date, runtime, rating,
-       poster_url, backdrop_url, video_url, video_source, subtitles_url, featured)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       poster_url, backdrop_url, video_url, video_source, external_id, external_source,
+       watch_providers, subtitles_url, featured)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -642,6 +670,10 @@ async function handleCreateTitle(request, env) {
       body.backdropUrl ?? null,
       body.videoUrl ?? null,
       body.videoSource ?? null,
+      body.externalId ?? null,
+      // Only a TMDB-sourced title has a namespace to remember.
+      body.externalId ? (body.externalSource ?? 'movie') : null,
+      encodeWatchProviders(body.watchProviders, null),
       body.subtitlesUrl ?? null,
       body.featured ? 1 : 0,
     )
@@ -684,6 +716,11 @@ async function handleUpdateTitle(request, env, slug) {
     backdrop_url: body.backdropUrl ?? existing.backdrop_url,
     video_url: body.videoUrl ?? existing.video_url,
     video_source: body.videoSource ?? existing.video_source,
+    external_id: body.externalId ?? existing.external_id,
+    external_source: body.externalId
+      ? (body.externalSource ?? existing.external_source ?? 'movie')
+      : (body.externalId === null ? null : existing.external_source),
+    watch_providers: encodeWatchProviders(body.watchProviders, existing.watch_providers),
     subtitles_url: body.subtitlesUrl ?? existing.subtitles_url,
     featured: body.featured === undefined ? existing.featured : body.featured ? 1 : 0,
     type: body.type ?? existing.type,
@@ -691,7 +728,8 @@ async function handleUpdateTitle(request, env, slug) {
 
   await env.DB.prepare(
     `UPDATE titles SET title=?, synopsis=?, genres=?, release_date=?, runtime=?, rating=?,
-       poster_url=?, backdrop_url=?, video_url=?, video_source=?, subtitles_url=?, featured=?, type=?,
+       poster_url=?, backdrop_url=?, video_url=?, video_source=?, external_id=?, external_source=?,
+       watch_providers=?, subtitles_url=?, featured=?, type=?,
        updated_at=datetime('now')
      WHERE id=?`,
   )
@@ -706,6 +744,9 @@ async function handleUpdateTitle(request, env, slug) {
       next.backdrop_url,
       next.video_url,
       next.video_source,
+      next.external_id,
+      next.external_source,
+      next.watch_providers,
       next.subtitles_url,
       next.featured,
       next.type,
@@ -1822,9 +1863,71 @@ async function handleTmdbLookup(request, env) {
     return json({ error: 'Invalid JSON body' }, 400);
   }
 
-  const result = await lookupExternalId(body.id, env.TMDB_API_KEY);
+  const result = await lookupExternalId(body.id, env.TMDB_API_KEY, normaliseRegion(body.region));
   if (result.error) return json({ error: result.error }, 400);
   return json({ title: result });
+}
+
+/**
+ * Re-reads where an already-posted title can be watched.
+ *
+ * Availability is regional and moves over time, so the stored snapshot goes
+ * stale. This lets staff refresh it without retyping the TMDB id.
+ */
+async function handleTmdbProviders(request, env) {
+  const auth = await requireAdmin(request, env);
+  if (auth.error) return auth.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const slug = String(body.slug ?? '').trim();
+  if (!slug) return json({ error: 'slug is required' }, 400);
+
+  const row = await env.DB.prepare('SELECT * FROM titles WHERE slug = ?').bind(slug).first();
+  if (!row) return json({ error: 'Title not found' }, 404);
+
+  // A hand-built or public-domain title never went through a TMDB lookup, so
+  // there is no record to query. Say that instead of spending a doomed call.
+  if (!row.external_id) {
+    return json(
+      { error: 'That title has no TMDB id saved. Run a lookup on it to attach one.' },
+      400,
+    );
+  }
+  if (!env.TMDB_API_KEY) {
+    return json({ error: 'TMDB_API_KEY is not set on this Worker' }, 400);
+  }
+
+  const region = normaliseRegion(body.region);
+  const providers = await fetchWatchProviders(
+    row.external_source,
+    row.external_id,
+    env.TMDB_API_KEY,
+    region,
+  );
+
+  if (!providers) {
+    return json({ error: 'TMDB has no availability data for that title' }, 404);
+  }
+
+  await env.DB.prepare(
+    "UPDATE titles SET watch_providers=?, updated_at=datetime('now') WHERE id=?",
+  )
+    .bind(JSON.stringify(providers), row.id)
+    .run();
+
+  await env.DB.prepare(
+    'INSERT INTO admin_action_log (id, admin_id, action, target_id, detail) VALUES (?,?,?,?,?)',
+  )
+    .bind(randomHex(16), auth.user.id, 'title.watch_providers', row.id, providers.region)
+    .run();
+
+  return json({ watchProviders: providers });
 }
 
 /**
@@ -1951,6 +2054,9 @@ export async function handleApi(request, env, url) {
 
     if (seg[1] === 'tmdb' && seg[2] === 'lookup' && method === 'POST') {
       return handleTmdbLookup(request, env);
+    }
+    if (seg[1] === 'tmdb' && seg[2] === 'providers' && method === 'POST') {
+      return handleTmdbProviders(request, env);
     }
 
     if (seg[1] === 'archive' && seg[2] === 'lookup' && method === 'POST') {

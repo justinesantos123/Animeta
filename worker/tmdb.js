@@ -73,6 +73,119 @@ function toTitle(raw, kind) {
   };
 }
 
+// ------------------------------------------------------------ watch providers
+
+/**
+ * Streaming availability, keyed by ISO 3166-1 alpha-2 country code.
+ *
+ * Availability is genuinely regional: a title can be on Netflix in the US and
+ * nowhere at all in Brazil. So the region that produced the list is reported
+ * alongside it rather than presenting the result as global, and a fallback to
+ * another region is recorded as such instead of silently relabelling it.
+ *
+ * Data here is supplied by TMDB's JustWatch partnership. It is a list of places
+ * a title can legally be watched, not a source of video: TMDB deliberately
+ * does not issue direct links to the services, only a link to its own watch
+ * page, which is the only link carried through here.
+ */
+const REGION_RE = /^[A-Za-z]{2}$/;
+
+export function normaliseRegion(input) {
+  const raw = String(input ?? '').trim().toUpperCase();
+  return REGION_RE.test(raw) ? raw : 'US';
+}
+
+// Presented in this order, skipping any bucket TMDB did not return.
+const PROVIDER_BUCKETS = [
+  { key: 'flatrate', label: 'Streaming' },
+  { key: 'ads', label: 'Free with ads' },
+  { key: 'free', label: 'Free' },
+  { key: 'rent', label: 'Rent' },
+  { key: 'buy', label: 'Buy' },
+];
+
+/**
+ * Only TMDB's own watch page is ever linked. The value is persisted and later
+ * rendered as an href, so it is constrained to the one host that is expected
+ * rather than trusted.
+ */
+function watchLink(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:') return null;
+    if (!/(^|\.)themoviedb\.org$/i.test(url.hostname)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalises a `/watch/providers` payload into grouped providers.
+ *
+ * Returns null only when TMDB reported no availability at all, which is not an
+ * error. A known title with an empty group list is a real answer: it means
+ * "not currently available here", and the UI says so rather than hiding it.
+ *
+ * @param {object} raw       parsed TMDB /watch/providers response
+ * @param {string} requested ISO country code to prefer
+ */
+export function parseWatchProviders(raw, requested = 'US') {
+  const regions = raw?.results;
+  if (!regions || typeof regions !== 'object' || Array.isArray(regions)) return null;
+
+  const wanted = normaliseRegion(requested);
+  const region =
+    regions[wanted] ?? regions.US ?? Object.values(regions).find((r) => r && typeof r === 'object');
+  if (!region || typeof region !== 'object') return null;
+
+  // Work out which region actually answered, so a US fallback requested as GB
+  // is not mislabelled as UK availability.
+  const usedRegion =
+    Object.keys(regions).find((k) => regions[k] === region) ?? wanted;
+
+  const groups = [];
+  for (const { key, label } of PROVIDER_BUCKETS) {
+    const list = Array.isArray(region[key]) ? region[key] : [];
+    const items = list
+      .filter((p) => p && p.provider_name)
+      .map((p) => ({
+        id: Number.isFinite(p.provider_id) ? p.provider_id : null,
+        name: String(p.provider_name),
+        logoUrl: image(p.logo_path, 'w92'),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (items.length) groups.push({ key, label, items });
+  }
+
+  return {
+    region: usedRegion,
+    regionRequested: wanted,
+    link: watchLink(region.link),
+    groups,
+  };
+}
+
+/**
+ * Fetches where a title can legally be watched.
+ *
+ * Availability is supplementary information, so any failure resolves to null
+ * rather than propagating: a title should still post cleanly when the
+ * availability lookup misses or TMDB is briefly unhappy.
+ */
+export async function fetchWatchProviders(kind, id, apiKey, region = 'US') {
+  if (!apiKey || !id) return null;
+
+  const type = kind === 'tv' || kind === 'series' ? 'tv' : 'movie';
+  const res = await tmdbFetch(`/${type}/${id}/watch/providers`, apiKey);
+  if (res.error) return null;
+
+  return parseWatchProviders(res.data, region);
+}
+
 async function tmdbFetch(path, key, params = {}) {
   const url = new URL(`${API}${path}`);
   url.searchParams.set('api_key', key);
@@ -97,11 +210,19 @@ async function tmdbFetch(path, key, params = {}) {
 }
 
 /**
- * Resolves a TMDB or IMDb id to catalog metadata.
+ * Resolves a TMDB or IMDb id to catalog metadata, plus where it can be watched.
  *
+ * Availability costs one extra TMDB call and is fetched alongside the metadata
+ * so a single paste in the staff console fills in everything known about the
+ * title. It is best-effort: `watchProviders` is simply absent when TMDB has no
+ * availability data or the lookup failed.
+ *
+ * @param {string} input   TMDB id, IMDb id, or either as a URL
+ * @param {string} apiKey  from the TMDB_API_KEY Worker secret
+ * @param {string} region  ISO country code to read availability for
  * @returns {Promise<{error?: string, ...title}>}
  */
-export async function lookupExternalId(input, apiKey) {
+export async function lookupExternalId(input, apiKey, region = 'US') {
   // Validate locally first. A malformed id should be reported as such whether
   // or not a key happens to be configured, and it costs no network call.
   const parsed = parseExternalId(input);
@@ -111,14 +232,26 @@ export async function lookupExternalId(input, apiKey) {
     return { error: 'TMDB_API_KEY is not set on this Worker' };
   }
 
+  // TMDB namespaces movies and shows separately, and only the resolved kind's
+  // availability endpoint is correct for the title.
+  const attachProviders = async (title) => {
+    const providers = await fetchWatchProviders(
+      title.type === 'series' ? 'tv' : 'movie',
+      title.externalId,
+      apiKey,
+      region,
+    );
+    return providers ? { ...title, watchProviders: providers } : title;
+  };
+
   if (parsed.source === 'tmdb') {
     // Try movie first, then tv: TMDB namespaces them separately.
     const asMovie = await tmdbFetch(`/movie/${parsed.id}`, apiKey);
-    if (asMovie.data) return toTitle(asMovie.data, 'movie');
+    if (asMovie.data) return attachProviders(toTitle(asMovie.data, 'movie'));
 
     if (asMovie.error?.includes('no record')) {
       const asTv = await tmdbFetch(`/tv/${parsed.id}`, apiKey);
-      if (asTv.data) return toTitle(asTv.data, 'tv');
+      if (asTv.data) return attachProviders(toTitle(asTv.data, 'tv'));
       return asTv.error ? asTv : { error: 'No TMDB record found' };
     }
     return asMovie.error ?? { error: 'Lookup failed' };
@@ -129,10 +262,10 @@ export async function lookupExternalId(input, apiKey) {
   if (found.error) return found;
 
   const movie = found.data?.movie_results?.[0];
-  if (movie) return { ...toTitle(movie, 'movie'), imdbId: parsed.id };
+  if (movie) return attachProviders({ ...toTitle(movie, 'movie'), imdbId: parsed.id });
 
   const tv = found.data?.tv_results?.[0];
-  if (tv) return { ...toTitle(tv, 'tv'), imdbId: parsed.id };
+  if (tv) return attachProviders({ ...toTitle(tv, 'tv'), imdbId: parsed.id });
 
   return { error: 'TMDB could not map that IMDb id to a movie or show' };
 }

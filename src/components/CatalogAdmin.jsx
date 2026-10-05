@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { TITLE_TYPES, titleTypeLabel } from '../lib/titleTypes';
 import ArchivePicker from './ArchivePicker';
+import WatchProviders from './WatchProviders';
+import { regionName, REGION_OPTIONS } from '../lib/regions';
 
 /**
  * Catalog management: post a title, and see what is already posted.
@@ -43,10 +45,15 @@ export default function CatalogAdmin() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
 
-  const [externalId, setExternalId] = useState('');
-  const [looking, setLooking] = useState(false);
+const [externalId, setExternalId] = useState('');
+const [looking, setLooking] = useState(false);
   // Populated by the last lookup so the form can show what it resolved to.
-  const [resolved, setResolved] = useState(null);
+const [resolved, setResolved] = useState(null);
+  // Availability snapshot from the last lookup, persisted on save.
+const [providers, setProviders] = useState(null);
+  // Availability is regional, so staff pick which market they are reading for.
+const [region, setRegion] = useState('US');
+const [refreshing, setRefreshing] = useState(null);
 
   const set = (key) => (e) => {
     const value = e?.target ? e.target.value : e;
@@ -73,7 +80,25 @@ export default function CatalogAdmin() {
     setEditing(null);
     setExternalId('');
     setResolved(null);
+    setProviders(null);
   };
+
+  /** Re-reads availability for a title already in the catalog. */
+  async function onRefreshProviders(t) {
+    setRefreshing(t.slug);
+    try {
+      const d = await api.tmdbProviders(t.slug, region);
+      setMessage({
+        ok: true,
+        text: `Updated where to watch "${t.title}" for ${d.watchProviders.region}.`,
+      });
+      await load();
+    } catch (e) {
+      setMessage({ ok: false, text: e.message });
+    } finally {
+      setRefreshing(null);
+    }
+  }
 
   /**
    * Resolve the pasted id, then fill the form. Only the fields TMDB actually
@@ -88,7 +113,7 @@ export default function CatalogAdmin() {
     setLooking(true);
     setMessage(null);
     try {
-      const d = await api.tmdbLookup(id);
+      const d = await api.tmdbLookup(id, region);
       const t = d.title;
       setForm((f) => ({
         ...f,
@@ -104,12 +129,21 @@ export default function CatalogAdmin() {
         backdropUrl: t.backdropUrl || f.backdropUrl,
       }));
       setResolved(t);
+      setProviders(t.watchProviders ?? null);
+      const found = (t.watchProviders?.groups ?? []).reduce((n, g) => n + g.items.length, 0);
       setMessage({
         ok: true,
-        text: `Filled in "${t.title}". Add the stream URL below, then save.`,
+        text:
+          `Filled in "${t.title}".` +
+          (t.watchProviders
+            ? found
+              ? ` Found ${found} places to watch it in ${t.watchProviders.region}.`
+              : ' TMDB has no availability data for it.'
+            : ''),
       });
     } catch (e) {
       setResolved(null);
+      setProviders(null);
       setMessage({ ok: false, text: e.message });
     } finally {
       setLooking(false);
@@ -126,6 +160,12 @@ export default function CatalogAdmin() {
         rating: form.rating === '' ? null : Number(form.rating),
         genres: form.genres,
         releaseDate: form.releaseDate || null,
+        // Send the lookup's TMDB id and availability through, and send an
+        // explicit null when there is nothing so a re-save does not leave a
+        // stale snapshot attached to an edited title.
+        externalId: resolved?.externalId ?? null,
+        externalSource: resolved?.type === 'series' ? 'tv' : 'movie',
+        watchProviders: providers ?? null,
       };
       if (editing) {
         await api.updateTitle(editing, payload);
@@ -215,7 +255,9 @@ export default function CatalogAdmin() {
 
         {!editing && (
           <div className="mb-4">
-            <ArchivePicker
+            {resolved?.watchProviders && <WatchProviders providers={resolved.watchProviders} />}
+
+      <ArchivePicker
               onError={(msg) => msg && setMessage({ ok: false, text: msg })}
               onAdded={(t) => {
                 setMessage({ ok: true, text: `"${t.title}" added to Movies and is playable now.` });
@@ -245,6 +287,25 @@ export default function CatalogAdmin() {
               placeholder="969681 or tt0133093"
               aria-describedby="ext-id-help"
             />
+            {/* Availability is regional, so the market being read is chosen here
+                rather than inferred: the same title can be streamable in one
+                country and absent from another. */}
+            <label className="sr-only" htmlFor="region">
+              Region for availability
+            </label>
+            <select
+              id="region"
+              value={region}
+              onChange={(e) => setRegion(e.target.value)}
+              className={`${INPUT} sm:w-36`}
+              aria-describedby="ext-id-help"
+            >
+              {REGION_OPTIONS.map((code) => (
+                <option key={code} value={code}>
+                  {regionName(code)}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={onLookup}
@@ -256,8 +317,8 @@ export default function CatalogAdmin() {
           </div>
           <p id="ext-id-help" className="mt-1.5 text-[11px] text-[var(--color-faint)]">
             A TMDB id (969681), an IMDb id (tt0133093), or the page URL for either. Fills in the
-            title, description, artwork, genres, rating and runtime. Nothing is saved until you
-            press Save.
+            title, description, artwork, genres, rating, runtime, and where it can legally be
+            watched in the selected region. Nothing is saved until you press Save.
           </p>
 
           {resolved && (
@@ -496,6 +557,47 @@ export default function CatalogAdmin() {
                         >
                           Public domain
                         </span>
+                      )}
+                      {/* Availability is recorded per title so staff can see at a
+                          glance which ones were sourced from TMDB and which are
+                          still missing it. */}
+                      {(() => {
+                        const count = (t.watchProviders?.groups ?? []).reduce(
+                          (n, g) => n + g.items.length,
+                          0,
+                        );
+                        if (count) {
+                          return (
+                            <span
+                              className="tabular-nums text-xs text-[var(--color-faint)]"
+                              title={`Availability via TMDB and JustWatch, ${t.watchProviders.region}`}
+                            >
+                              {count} places · {t.watchProviders.region}
+                            </span>
+                          );
+                        }
+                        return (
+                          <span
+                            className="text-xs text-[var(--color-faint)]"
+                            title={
+                              t.watchProviders
+                                ? 'TMDB reported no availability for that region'
+                                : 'Run a TMDB lookup on this title to record where it can be watched'
+                            }
+                          >
+                            {t.watchProviders ? `none in ${t.watchProviders.region}` : 'no providers'}
+                          </span>
+                        );
+                      })()}
+                      {t.externalId && (
+                        <button
+                          type="button"
+                          onClick={() => onRefreshProviders(t)}
+                          disabled={refreshing === t.slug}
+                          className="rounded-[var(--radius-control)] px-2 py-1 text-xs text-[var(--color-muted)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] disabled:opacity-50"
+                        >
+                          {refreshing === t.slug ? 'Refreshing…' : 'Refresh'}
+                        </button>
                       )}
                       {!t.videoUrl && (
                         <span className="text-xs text-[var(--color-danger)]">no stream</span>

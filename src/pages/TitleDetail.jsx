@@ -7,6 +7,7 @@ import VideoPlayer from '../components/VideoPlayer';
 import PlaybackGate from '../components/PlaybackGate';
 import { titleTypeLabel, isEpisodic } from '../lib/titleTypes';
 import TitleCard from '../components/TitleCard';
+import WatchProviders from '../components/WatchProviders';
 
 export default function TitleDetail() {
   const { slug } = useParams();
@@ -328,6 +329,8 @@ export default function TitleDetail() {
         {!episodic && (
           <p className="text-xs text-[var(--color-faint)]">This movie plays without an account.</p>
         )}
+
+        {item.watchProviders && <WatchProviders providers={item.watchProviders} />}
 
         <section aria-labelledby="related-heading">
           <div className="section-head">
