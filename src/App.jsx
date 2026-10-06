@@ -6,6 +6,7 @@ import { AuthProvider } from './context/AuthContext';
 import { CatalogProvider } from './context/CatalogContext';
 import { NotificationsProvider } from './context/NotificationsContext';
 import RouteMemory from './components/RouteMemory';
+import HashRoutes from './components/HashRoutes';
 import Home from './pages/Home';
 import Browse from './pages/Browse';
 import Category from './pages/Category';
@@ -37,8 +38,10 @@ export default function App() {
 
         <TopNav />
         <WelcomeBanner />
-        {/* Keeps a refresh from losing the page while the zone redirects
-            non-asset paths home. See the component for why it exists. */}
+        {/* Resolves emailed fragment links (#/verify-email?token=...), and keeps
+            a refresh from losing the page while the zone redirects non-asset
+            paths home. Both exist because of that redirect. */}
+        <HashRoutes />
         <RouteMemory />
 
         <main id="main">

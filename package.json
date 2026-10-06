@@ -12,7 +12,7 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:staff": "node scripts/smoke-staff.mjs",
     "seed": "node scripts/generate-seed.mjs",
-    "test": "node scripts/check-imports.mjs && node scripts/test-schema.mjs && node scripts/test-access-rule.mjs && node scripts/test-permissions.mjs && node scripts/test-embed.mjs && node scripts/test-derive-username.mjs && node scripts/test-episode-import.mjs && node scripts/test-ticket-rules.mjs && node scripts/test-verification.mjs && node scripts/test-episode-casing.mjs && node scripts/test-routing.mjs && node scripts/test-uploads.mjs && node scripts/test-range.mjs && node scripts/test-title-types.mjs && node scripts/test-video-fields.mjs && node scripts/test-genres-normalisation.mjs && node scripts/test-timeago.mjs && node scripts/test-password-policy.mjs && node scripts/test-error-boundary.mjs && node scripts/smoke.mjs && node scripts/smoke-staff.mjs"
+    "test": "node scripts/check-imports.mjs && node scripts/test-schema.mjs && node scripts/test-access-rule.mjs && node scripts/test-permissions.mjs && node scripts/test-embed.mjs && node scripts/test-derive-username.mjs && node scripts/test-episode-import.mjs && node scripts/test-ticket-rules.mjs && node scripts/test-verification.mjs && node scripts/test-episode-casing.mjs && node scripts/test-link-resilience.mjs && node scripts/test-routing.mjs && node scripts/test-uploads.mjs && node scripts/test-range.mjs && node scripts/test-title-types.mjs && node scripts/test-video-fields.mjs && node scripts/test-genres-normalisation.mjs && node scripts/test-timeago.mjs && node scripts/test-password-policy.mjs && node scripts/test-error-boundary.mjs && node scripts/smoke.mjs && node scripts/smoke-staff.mjs"
   },
   "dependencies": {
     "hls.js": "^1.5.20",

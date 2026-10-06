@@ -632,7 +632,18 @@ async function issueEmailVerification(env, user) {
     .bind(hash, expiresAt, user.id)
     .run();
 
-  const verifyUrl = `${String(env.APP_URL || '').replace(/\/+$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
+  // The target is in the URL FRAGMENT, not the query.
+//
+// The zone still has Cloudflare's Automatic Speculation Rules on, which answer
+// every non-asset path with a 307 to "/". A link to /verify-email?token=... is
+// therefore answered with a redirect before the Worker sees it, and the token is
+// dropped -- the confirmation link did nothing at all. A fragment is never sent
+// to the server, so the browser asks for "/" (which works), and the app picks the
+// route out of location.hash on load. See src/components/HashRoutes.jsx.
+//
+// This keeps working once those rules are turned off, so nothing has to be
+// reverted later.
+const verifyUrl = `${String(env.APP_URL || '').replace(/\/+$/, '')}/#/verify-email?token=${encodeURIComponent(token)}`;
 
   const mail = await sendVerificationEmail(env, {
     to: user.email,
@@ -1604,7 +1615,10 @@ async function issueResetLink(env, user, request) {
     .run();
 
   const appUrl = String(env.APP_URL || new URL(request.url).origin).replace(/\/+$/, '');
-  const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
+  // Fragment, for the same reason as the verification link: a reset link that
+  // arrives without its token is a dead end, and a query-string one is stripped by
+  // the redirect the zone still applies.
+  const resetUrl = `${appUrl}/#/reset-password?token=${encodeURIComponent(token)}`;
 
   const mail = await sendPasswordResetEmail(env, {
     to: user.email,

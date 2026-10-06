@@ -1,6 +1,45 @@
 import { useCallback, useRef, useState } from 'react';
 
 /**
+ * Can this browser actually decode this file?
+ *
+ * There is no transcoding on the server: the bytes are stored as sent and handed
+ * straight to the player. A container the browser rejects therefore uploads
+ * cleanly, publishes, and only fails when somebody presses play -- which reads as
+ * a broken site rather than an unsupported file, and costs the uploader 500MB of
+ * bandwidth before anybody notices.
+ *
+ * This is a best-effort check, not a verdict. It only refuses a file the browser
+ * has explicitly failed to load metadata for, and a probe that never answers is
+ * treated as fine. Some encodings load metadata and still fail mid-playback; that
+ * residual risk is the honest limit of shipping without transcoding.
+ */
+function probePlayable(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    let settled = false;
+
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      resolve(ok);
+    };
+
+    // Never block the upload on a probe that will not answer.
+    const timer = setTimeout(() => finish(true), 3000);
+
+    video.preload = 'metadata';
+    video.muted = true;
+    video.onloadedmetadata = () => finish(true);
+    video.onerror = () => finish(false);
+    video.src = url;
+  });
+}
+
+/**
  * Uploads a video to R2 through the Worker.
  *
  * Reports progress from the XHR upload event, which is the only way to get real
@@ -14,6 +53,7 @@ export default function VideoUploader({ onUploaded, disabled }) {
   const xhrRef = useRef(null);
   const [progress, setProgress] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState(null);
 
   const send = useCallback(
@@ -76,11 +116,33 @@ export default function VideoUploader({ onUploaded, disabled }) {
     [onUploaded],
   );
 
-  const onPick = (e) => {
+  const onPick = async (e) => {
     const file = e.target.files?.[0];
     // Cleared so re-picking the same file fires a change event again.
     e.target.value = '';
     if (!file) return;
+
+    setError(null);
+
+    // Checked before any bytes leave the browser, so an unsupported file costs
+    // nothing rather than appearing as a broken title later.
+    setChecking(true);
+    let playable = true;
+    try {
+      playable = await probePlayable(file);
+    } catch {
+      playable = true;
+    } finally {
+      setChecking(false);
+    }
+
+    if (!playable) {
+      setError(
+        'This browser cannot play that file, so it would upload and then fail for viewers. Re-export it as H.264 MP4 or VP9 WebM and try again.',
+      );
+      return;
+    }
+
     send(file);
   };
 
@@ -130,10 +192,23 @@ export default function VideoUploader({ onUploaded, disabled }) {
             aria-describedby="upload-help"
             className="mt-2 block w-full text-xs text-[var(--color-muted)] file:mr-3 file:rounded-[var(--radius-control)] file:border-0 file:bg-[var(--color-surface-2)] file:px-3 file:py-2 file:text-xs file:font-medium file:text-[var(--color-text)] hover:file:bg-[var(--color-surface-3)]"
           />
-          <p id="upload-help" className="mt-1.5 text-[11px] text-[var(--color-faint)]">
+          <p className="mt-1.5 text-[11px] text-[var(--color-faint)]">
             MP4, WebM or MOV, up to 500MB. The file is stored on the site and plays
             for everyone, so only upload video you have the right to publish.
           </p>
+          {/* The limit, stated where it is chosen rather than discovered later.
+              Nothing is transcoded here, so what plays is exactly what was
+              uploaded. */}
+          <p className="mt-1 text-[11px] text-[var(--color-faint)]">
+            Files are stored and served exactly as sent, with no re-encoding, so a
+            format your viewers&rsquo; browsers cannot decode will not play. H.264
+            in an MP4 is the safest choice; WebM works too.
+          </p>
+          {checking && (
+            <p className="mt-1.5 text-[11px] text-[var(--color-muted)]">
+              Checking this file can be played…
+            </p>
+          )}
         </>
       )}
 
